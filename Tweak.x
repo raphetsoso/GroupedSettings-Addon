@@ -15,7 +15,8 @@
 // Applique le style edge-to-edge de GroupedSettings17 à d'autres apps Apple :
 // Conseils, Contacts, Téléphone, Safari, Fichiers, Mail, Santé, Photos,
 // Appareil photo, Horloge, Plans, Météo, Rappels, Forme, Localiser, Traduire,
-// Freeform, Dictaphone, Livres.
+// Freeform, Dictaphone, Livres, Assistance, Journal, Watch, Maison, toutes
+// les autres apps Apple préinstallées, et des apps tierces populaires (désactivées par défaut).
 //
 //   - Nécessite GroupedSettings17 (dépendance dpkg + vérification à l'exécution :
 //     recherche sur Havoc, sinon message d'erreur vers le GitHub).
@@ -104,13 +105,13 @@ static BOOL GSHasArgCount(Class cls, SEL sel, unsigned int count) {
 
 // --- Préférence "addon.<bundle id>" (défaut : activé) ----------------------------------
 
-static BOOL GSIsEnabledForKey(NSString *key) {
+static BOOL GSIsEnabledForKey(NSString *key, BOOL defaultValue) {
     CFPreferencesAppSynchronize(GS_DOMAIN);
     id value = CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)key, GS_DOMAIN));
     if (value && [value respondsToSelector:@selector(boolValue)]) {
         return [value boolValue];
     }
-    return YES;
+    return defaultValue;
 }
 
 // --- Aplatissement -----------------------------------------------------------
@@ -418,7 +419,7 @@ static void GSInstallUIKitHooks(void) {
 // Apps ciblées (une entrée = un interrupteur dans le panneau GroupedSettings17)
 // ===========================================================================
 
-static NSArray<NSArray<NSString *> *> *GSAddonApps(void) {
+static NSArray<NSArray<NSString *> *> *GSAppleApps(void) {
     // { bundle id, nom EN, nom FR }
     return @[
         @[@"com.apple.tips",              @"Tips",     @"Conseils"],
@@ -440,20 +441,327 @@ static NSArray<NSArray<NSString *> *> *GSAddonApps(void) {
         @[@"com.apple.freeform",          @"Freeform", @"Freeform"],
         @[@"com.apple.VoiceMemos",        @"Voice Memos", @"Dictaphone"],
         @[@"com.apple.iBooks",            @"Books",    @"Livres"],
+        @[@"com.apple.supportapp",        @"Apple Support", @"Assistance"],
+        @[@"com.apple.journal",           @"Journal",  @"Journal"],
+        @[@"com.apple.Bridge",            @"Watch",    @"Watch"],
+        @[@"com.apple.Home",              @"Home",     @"Maison"],
+        @[@"com.apple.MobileSMS",         @"Messages", @"Messages"],
+        @[@"com.apple.mobilecal",         @"Calendar", @"Calendrier"],
+        @[@"com.apple.mobilenotes",       @"Notes",    @"Notes"],
+        @[@"com.apple.AppStore",          @"App Store", @"App Store"],
+        @[@"com.apple.Passbook",          @"Wallet",   @"Wallet"],
+        @[@"com.apple.calculator",        @"Calculator", @"Calculette"],
+        @[@"com.apple.compass",           @"Compass",  @"Boussole"],
+        @[@"com.apple.measure",           @"Measure",  @"Mesure"],
+        @[@"com.apple.shortcuts",         @"Shortcuts", @"Raccourcis"],
+        @[@"com.apple.Music",             @"Music",    @"Musique"],
+        @[@"com.apple.tv",                @"TV",       @"TV"],
+        @[@"com.apple.podcasts",          @"Podcasts", @"Podcasts"],
+        @[@"com.apple.facetime",          @"FaceTime", @"FaceTime"],
+        @[@"com.apple.stocks",            @"Stocks",   @"Bourse"],
+        @[@"com.apple.Magnifier",         @"Magnifier", @"Loupe"],
+        @[@"com.apple.MobileStore",       @"iTunes Store", @"iTunes Store"],
+        @[@"com.apple.Passwords",         @"Passwords", @"Mots de passe"],
+        @[@"com.apple.store.Jolly",       @"Apple Store", @"Apple Store"],
     ];
+}
+
+// Apps tierces populaires (désactivées par défaut dans le menu).
+static NSArray<NSArray<NSString *> *> *GSThirdPartyApps(void) {
+    // { bundle id, nom }
+    return @[
+        @[@"net.whatsapp.WhatsApp",            @"WhatsApp"],
+        @[@"com.burbn.instagram",              @"Instagram"],
+        @[@"com.burbn.barcelona",              @"Threads"],
+        @[@"com.facebook.Facebook",            @"Facebook"],
+        @[@"com.facebook.Messenger",           @"Messenger"],
+        @[@"com.zhiliaoapp.musically",         @"TikTok"],
+        @[@"com.google.ios.youtube",           @"YouTube"],
+        @[@"com.google.Gmail",                 @"Gmail"],
+        @[@"com.google.chrome.ios",            @"Chrome"],
+        @[@"com.google.Maps",                  @"Google Maps"],
+        @[@"com.google.GoogleMobile",          @"Google"],
+        @[@"com.google.Drive",                 @"Google Drive"],
+        @[@"com.toyopagroup.picaboo",          @"Snapchat"],
+        @[@"com.atebits.Tweetie2",             @"X"],
+        @[@"ph.telegra.Telegraph",             @"Telegram"],
+        @[@"org.whispersystems.signal",        @"Signal"],
+        @[@"com.spotify.client",               @"Spotify"],
+        @[@"com.netflix.Netflix",              @"Netflix"],
+        @[@"com.disney.disneyplus",            @"Disney+"],
+        @[@"com.amazon.Amazon",                @"Amazon"],
+        @[@"com.hammerandchisel.discord",      @"Discord"],
+        @[@"com.reddit.Reddit",                @"Reddit"],
+        @[@"com.linkedin.LinkedIn",            @"LinkedIn"],
+        @[@"pinterest",                        @"Pinterest"],
+        @[@"com.ubercab.UberClient",           @"Uber"],
+        @[@"com.waze.iphone",                  @"Waze"],
+        @[@"tv.twitch",                        @"Twitch"],
+        @[@"org.mozilla.ios.Firefox",          @"Firefox"],
+        @[@"com.microsoft.Office.Outlook",     @"Outlook"],
+        @[@"com.microsoft.skype.teams",        @"Teams"],
+        @[@"com.microsoft.Office.Word",        @"Word"],
+        @[@"com.microsoft.Office.Excel",       @"Excel"],
+        @[@"us.zoom.videomeetings",            @"Zoom"],
+        @[@"com.tinyspeck.chatlyio",           @"Slack"],
+        @[@"com.getdropbox.Dropbox",           @"Dropbox"],
+        @[@"com.yourcompany.PPClient",         @"PayPal"],
+        @[@"com.openai.chat",                  @"ChatGPT"],
+        @[@"com.duolingo.DuolingoMobile",      @"Duolingo"],
+        @[@"com.airbnb.app",                   @"Airbnb"],
+        @[@"com.ubercab.UberEats",             @"Uber Eats"],
+        @[@"com.cardify.tinder",               @"Tinder"],
+        @[@"com.moxco.bumble",                 @"Bumble"],
+        @[@"com.strava.stravaride",            @"Strava"],
+        @[@"com.revolut.revolut",              @"Revolut"],
+        @[@"com.microsoft.msedge",             @"Edge"],
+        @[@"com.deezer.Deezer",                @"Deezer"],
+    ];
+}
+
+static BOOL GSIsThirdParty(NSString *bundleID) {
+    for (NSArray<NSString *> *app in GSThirdPartyApps()) {
+        if ([app[0] isEqualToString:bundleID]) return YES;
+    }
+    return NO;
 }
 
 static NSString *GSAddonKey(NSString *bundleID) {
     return [@"addon." stringByAppendingString:bundleID];
 }
 
-static BOOL GSIsFrench(void) {
-    NSString *lang = [NSLocale preferredLanguages].firstObject;
-    return [lang hasPrefix:@"fr"];
+// ===========================================================================
+// Langues : mêmes 12 langues que GroupedSettings17
+// (en, fr, de, it, ru, zh-Hans, zh-Hant, ja, vi, ar, es, pt ; anglais par défaut)
+// ===========================================================================
+
+static NSString *GSLanguageCode(void) {
+    // Langue du SYSTÈME (et non le réglage de langue propre à l'app) ; si elle
+    // n'est pas prise en charge, anglais.
+    NSArray *langs = CFBridgingRelease(CFPreferencesCopyValue(CFSTR("AppleLanguages"),
+        kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesAnyHost));
+    if (![langs isKindOfClass:[NSArray class]] || !langs.count) langs = [NSLocale preferredLanguages];
+    NSString *lang = [langs.firstObject isKindOfClass:[NSString class]] ? langs.firstObject : @"en";
+    if ([lang hasPrefix:@"zh"]) {
+        BOOL trad = [lang hasPrefix:@"zh-Hant"] || [lang hasPrefix:@"zh-TW"] || [lang hasPrefix:@"zh-HK"] || [lang hasPrefix:@"zh-MO"];
+        return trad ? @"zh-Hant" : @"zh-Hans";
+    }
+    for (NSString *code in @[@"fr", @"de", @"it", @"ru", @"ja", @"vi", @"ar", @"es", @"pt"]) {
+        if ([lang hasPrefix:code]) return code;
+    }
+    return @"en";
 }
 
-static NSString *GSL(NSString *en, NSString *fr) {
-    return GSIsFrench() ? fr : en;
+static NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *GSStringTable(void) {
+    static NSDictionary *table;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        table = @{
+            @"close": @{
+                @"en": @"Close",
+                @"fr": @"Fermer",
+                @"de": @"Schließen",
+                @"it": @"Chiudi",
+                @"ru": @"Закрыть",
+                @"zh-Hans": @"关闭",
+                @"zh-Hant": @"關閉",
+                @"ja": @"閉じる",
+                @"vi": @"Đóng",
+                @"ar": @"إغلاق",
+                @"es": @"Cerrar",
+                @"pt": @"Fechar",
+            },
+            @"open_havoc": @{
+                @"en": @"Open Havoc",
+                @"fr": @"Ouvrir Havoc",
+                @"de": @"Havoc öffnen",
+                @"it": @"Apri Havoc",
+                @"ru": @"Открыть Havoc",
+                @"zh-Hans": @"打开 Havoc",
+                @"zh-Hant": @"打開 Havoc",
+                @"ja": @"Havoc を開く",
+                @"vi": @"Mở Havoc",
+                @"ar": @"فتح Havoc",
+                @"es": @"Abrir Havoc",
+                @"pt": @"Abrir Havoc",
+            },
+            @"open_github": @{
+                @"en": @"Open GitHub",
+                @"fr": @"Ouvrir GitHub",
+                @"de": @"GitHub öffnen",
+                @"it": @"Apri GitHub",
+                @"ru": @"Открыть GitHub",
+                @"zh-Hans": @"打开 GitHub",
+                @"zh-Hant": @"打開 GitHub",
+                @"ja": @"GitHub を開く",
+                @"vi": @"Mở GitHub",
+                @"ar": @"فتح GitHub",
+                @"es": @"Abrir GitHub",
+                @"pt": @"Abrir GitHub",
+            },
+            @"req_title": @{
+                @"en": @"GroupedSettings17 required",
+                @"fr": @"GroupedSettings17 requis",
+                @"de": @"GroupedSettings17 erforderlich",
+                @"it": @"GroupedSettings17 richiesto",
+                @"ru": @"Требуется GroupedSettings17",
+                @"zh-Hans": @"需要 GroupedSettings17",
+                @"zh-Hant": @"需要 GroupedSettings17",
+                @"ja": @"GroupedSettings17 が必要です",
+                @"vi": @"Cần GroupedSettings17",
+                @"ar": @"GroupedSettings17 مطلوب",
+                @"es": @"Se requiere GroupedSettings17",
+                @"pt": @"GroupedSettings17 necessário",
+            },
+            @"req_havoc": @{
+                @"en": @"GroupedSettings17 Addon for other Apps needs GroupedSettings17. It was found on Havoc: install it, then reopen this app.",
+                @"fr": @"GroupedSettings17 Addon for other Apps a besoin de GroupedSettings17. Il est disponible sur Havoc : installe-le, puis rouvre cette app.",
+                @"de": @"GroupedSettings17 Addon for other Apps benötigt GroupedSettings17. Es wurde auf Havoc gefunden: Installiere es und öffne diese App danach erneut.",
+                @"it": @"GroupedSettings17 Addon for other Apps richiede GroupedSettings17. È disponibile su Havoc: installalo, poi riapri questa app.",
+                @"ru": @"GroupedSettings17 Addon for other Apps требуется GroupedSettings17. Он найден в Havoc: установите его и снова откройте это приложение.",
+                @"zh-Hans": @"GroupedSettings17 Addon for other Apps 需要 GroupedSettings17。已在 Havoc 上找到它：请安装后重新打开此 App。",
+                @"zh-Hant": @"GroupedSettings17 Addon for other Apps 需要 GroupedSettings17。已在 Havoc 找到：請安裝後重新打開此 App。",
+                @"ja": @"GroupedSettings17 Addon for other Apps には GroupedSettings17 が必要です。Havoc で見つかりました。インストールしてから、このAppを開き直してください。",
+                @"vi": @"GroupedSettings17 Addon for other Apps cần GroupedSettings17. Đã tìm thấy trên Havoc: hãy cài đặt rồi mở lại ứng dụng này.",
+                @"ar": @"تحتاج GroupedSettings17 Addon for other Apps إلى GroupedSettings17. تم العثور عليه على Havoc: ثبّته ثم أعد فتح هذا التطبيق.",
+                @"es": @"GroupedSettings17 Addon for other Apps necesita GroupedSettings17. Se encontró en Havoc: instálalo y vuelve a abrir esta app.",
+                @"pt": @"GroupedSettings17 Addon for other Apps precisa do GroupedSettings17. Foi encontrado no Havoc: instale-o e volte a abrir esta app.",
+            },
+            @"err_title": @{
+                @"en": @"Error: GroupedSettings17 missing",
+                @"fr": @"Erreur : GroupedSettings17 manquant",
+                @"de": @"Fehler: GroupedSettings17 fehlt",
+                @"it": @"Errore: GroupedSettings17 mancante",
+                @"ru": @"Ошибка: GroupedSettings17 не установлен",
+                @"zh-Hans": @"错误：未安装 GroupedSettings17",
+                @"zh-Hant": @"錯誤：未安裝 GroupedSettings17",
+                @"ja": @"エラー：GroupedSettings17 がありません",
+                @"vi": @"Lỗi: thiếu GroupedSettings17",
+                @"ar": @"خطأ: GroupedSettings17 غير مثبّت",
+                @"es": @"Error: falta GroupedSettings17",
+                @"pt": @"Erro: falta o GroupedSettings17",
+            },
+            @"err_msg": @{
+                @"en": @"GroupedSettings17 Addon for other Apps needs GroupedSettings17, which was not found on Havoc. Please install GroupedSettings17 from %@",
+                @"fr": @"GroupedSettings17 Addon for other Apps a besoin de GroupedSettings17, introuvable sur Havoc. Installe GroupedSettings17 depuis %@",
+                @"de": @"GroupedSettings17 Addon for other Apps benötigt GroupedSettings17, das auf Havoc nicht gefunden wurde. Bitte installiere GroupedSettings17 von %@",
+                @"it": @"GroupedSettings17 Addon for other Apps richiede GroupedSettings17, non trovato su Havoc. Installa GroupedSettings17 da %@",
+                @"ru": @"GroupedSettings17 Addon for other Apps требуется GroupedSettings17, который не найден в Havoc. Установите GroupedSettings17 отсюда: %@",
+                @"zh-Hans": @"GroupedSettings17 Addon for other Apps 需要 GroupedSettings17，但在 Havoc 上未找到。请从以下地址安装 GroupedSettings17：%@",
+                @"zh-Hant": @"GroupedSettings17 Addon for other Apps 需要 GroupedSettings17，但在 Havoc 找不到。請從以下網址安裝 GroupedSettings17：%@",
+                @"ja": @"GroupedSettings17 Addon for other Apps には GroupedSettings17 が必要ですが、Havoc で見つかりませんでした。次のURLから GroupedSettings17 をインストールしてください：%@",
+                @"vi": @"GroupedSettings17 Addon for other Apps cần GroupedSettings17 nhưng không tìm thấy trên Havoc. Vui lòng cài GroupedSettings17 từ %@",
+                @"ar": @"تحتاج GroupedSettings17 Addon for other Apps إلى GroupedSettings17 الذي لم يُعثر عليه على Havoc. يرجى تثبيت GroupedSettings17 من %@",
+                @"es": @"GroupedSettings17 Addon for other Apps necesita GroupedSettings17, que no se encontró en Havoc. Instala GroupedSettings17 desde %@",
+                @"pt": @"GroupedSettings17 Addon for other Apps precisa do GroupedSettings17, que não foi encontrado no Havoc. Instale o GroupedSettings17 a partir de %@",
+            },
+            @"top_note": @{
+                @"en": @"The top switch is only for Settings. Apps are set in the menus below.",
+                @"fr": @"L'interrupteur du haut ne concerne que Réglages. Les apps se règlent dans les menus ci-dessous.",
+                @"de": @"Der obere Schalter gilt nur für Einstellungen. Die Apps werden in den Menüs darunter eingestellt.",
+                @"it": @"L'interruttore in alto riguarda solo Impostazioni. Le app si regolano nei menu qui sotto.",
+                @"ru": @"Верхний переключатель относится только к «Настройкам». Приложения настраиваются в меню ниже.",
+                @"zh-Hans": @"顶部开关仅适用于“设置”。各个 App 请在下方菜单中设置。",
+                @"zh-Hant": @"頂部開關僅適用於「設定」。各個 App 請在下方選單中設定。",
+                @"ja": @"上のスイッチは「設定」アプリ専用です。ほかのAppは下のメニューで設定します。",
+                @"vi": @"Công tắc ở trên cùng chỉ dành cho Cài đặt. Các ứng dụng được thiết lập trong các menu bên dưới.",
+                @"ar": @"المفتاح العلوي مخصص للإعدادات فقط. يتم ضبط التطبيقات من القوائم أدناه.",
+                @"es": @"El interruptor superior solo afecta a Ajustes. Las apps se configuran en los menús de abajo.",
+                @"pt": @"O interruptor superior é apenas para Ajustes. As apps são configuradas nos menus abaixo.",
+            },
+            @"group_title": @{
+                @"en": @"Other Apps",
+                @"fr": @"Autres applications",
+                @"de": @"Weitere Apps",
+                @"it": @"Altre app",
+                @"ru": @"Другие приложения",
+                @"zh-Hans": @"其他 App",
+                @"zh-Hant": @"其他 App",
+                @"ja": @"その他のApp",
+                @"vi": @"Ứng dụng khác",
+                @"ar": @"تطبيقات أخرى",
+                @"es": @"Otras apps",
+                @"pt": @"Outras apps",
+            },
+            @"menu_apple": @{
+                @"en": @"Preinstalled Apps",
+                @"fr": @"Apps préinstallées",
+                @"de": @"Vorinstallierte Apps",
+                @"it": @"App preinstallate",
+                @"ru": @"Предустановленные приложения",
+                @"zh-Hans": @"预装 App",
+                @"zh-Hant": @"預載 App",
+                @"ja": @"プリインストールApp",
+                @"vi": @"Ứng dụng cài sẵn",
+                @"ar": @"التطبيقات المثبتة مسبقًا",
+                @"es": @"Apps preinstaladas",
+                @"pt": @"Apps pré-instaladas",
+            },
+            @"menu_third": @{
+                @"en": @"Third-Party Apps",
+                @"fr": @"Apps tierces",
+                @"de": @"Apps von Drittanbietern",
+                @"it": @"App di terze parti",
+                @"ru": @"Сторонние приложения",
+                @"zh-Hans": @"第三方 App",
+                @"zh-Hant": @"第三方 App",
+                @"ja": @"サードパーティApp",
+                @"vi": @"Ứng dụng bên thứ ba",
+                @"ar": @"تطبيقات الجهات الخارجية",
+                @"es": @"Apps de terceros",
+                @"pt": @"Apps de terceiros",
+            },
+            @"footer_apple": @{
+                @"en": @"Apple apps. Close and reopen an app after a change.",
+                @"fr": @"Apps Apple. Ferme puis rouvre l'app après un changement.",
+                @"de": @"Apple-Apps. Nach einer Änderung die App schließen und erneut öffnen.",
+                @"it": @"App Apple. Dopo una modifica, chiudi e riapri l'app.",
+                @"ru": @"Приложения Apple. После изменения закройте и снова откройте приложение.",
+                @"zh-Hans": @"Apple App。更改后请关闭并重新打开对应 App。",
+                @"zh-Hant": @"Apple App。變更後請關閉並重新打開對應 App。",
+                @"ja": @"Apple純正App。変更後はAppを終了してからもう一度開いてください。",
+                @"vi": @"Ứng dụng của Apple. Sau khi thay đổi, hãy đóng rồi mở lại ứng dụng.",
+                @"ar": @"تطبيقات Apple. بعد أي تغيير، أغلق التطبيق ثم افتحه من جديد.",
+                @"es": @"Apps de Apple. Tras un cambio, cierra y vuelve a abrir la app.",
+                @"pt": @"Apps da Apple. Após uma alteração, feche e reabra a app.",
+            },
+            @"footer_third": @{
+                @"en": @"Popular third-party apps, off by default. Close and reopen an app after a change.",
+                @"fr": @"Apps tierces populaires, désactivées par défaut. Ferme puis rouvre l'app après un changement.",
+                @"de": @"Beliebte Apps von Drittanbietern, standardmäßig aus. Nach einer Änderung die App schließen und erneut öffnen.",
+                @"it": @"App di terze parti popolari, disattivate per impostazione predefinita. Dopo una modifica, chiudi e riapri l'app.",
+                @"ru": @"Популярные сторонние приложения, по умолчанию выключены. После изменения закройте и снова откройте приложение.",
+                @"zh-Hans": @"热门第三方 App，默认关闭。更改后请关闭并重新打开对应 App。",
+                @"zh-Hant": @"熱門第三方 App，預設為關閉。變更後請關閉並重新打開對應 App。",
+                @"ja": @"人気のサードパーティApp（初期設定ではオフ）。変更後はAppを終了してからもう一度開いてください。",
+                @"vi": @"Các ứng dụng bên thứ ba phổ biến, mặc định tắt. Sau khi thay đổi, hãy đóng rồi mở lại ứng dụng.",
+                @"ar": @"تطبيقات شائعة من جهات خارجية، متوقفة افتراضيًا. بعد أي تغيير، أغلق التطبيق ثم افتحه من جديد.",
+                @"es": @"Apps de terceros populares, desactivadas por defecto. Tras un cambio, cierra y vuelve a abrir la app.",
+                @"pt": @"Apps de terceiros populares, desativadas por predefinição. Após uma alteração, feche e reabra a app.",
+            },
+        };
+    });
+    return table;
+}
+
+static NSString *GSS(NSString *key) {
+    NSDictionary *row = GSStringTable()[key];
+    return row[GSLanguageCode()] ?: row[@"en"] ?: key;
+}
+
+// Nom d'app localisé par le système (suit toutes les langues) ; anglais en secours.
+static NSString *GSAppName(NSString *bundleID, NSString *fallback) {
+    Class proxy = NSClassFromString(@"LSApplicationProxy");
+    SEL sel = NSSelectorFromString(@"applicationProxyForIdentifier:");
+    if (proxy && [proxy respondsToSelector:sel]) {
+        id p = ((id (*)(id, SEL, id))objc_msgSend)(proxy, sel, bundleID);
+        SEL nameSel = NSSelectorFromString(@"localizedName");
+        if (p && [p respondsToSelector:nameSel]) {
+            id n = ((id (*)(id, SEL))objc_msgSend)(p, nameSel);
+            if ([n isKindOfClass:[NSString class]] && [n length] && ![n isEqualToString:bundleID]) return n;
+        }
+    }
+    return fallback;
 }
 
 // ===========================================================================
@@ -502,7 +810,7 @@ static void GSPresentAlert(NSString *title, NSString *message, NSString *openTit
         NSURL *u = [NSURL URLWithString:url];
         if (u) [[UIApplication sharedApplication] openURL:u options:@{} completionHandler:nil];
     }]];
-    [alert addAction:[UIAlertAction actionWithTitle:GSL(@"Close", @"Fermer")
+    [alert addAction:[UIAlertAction actionWithTitle:GSS(@"close")
                                               style:UIAlertActionStyleCancel
                                             handler:nil]];
     [top presentViewController:alert animated:YES completion:nil];
@@ -523,18 +831,14 @@ static void GSHandleMissingDependency(void) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (onHavoc) {
                 GSPresentAlert(
-                    GSL(@"GroupedSettings17 required", @"GroupedSettings17 requis"),
-                    GSL(@"GroupedSettings17 Addon for other Apps needs GroupedSettings17. It was found on Havoc: install it, then reopen this app.",
-                        @"GroupedSettings17 Addon for other Apps a besoin de GroupedSettings17. Il est disponible sur Havoc : installe-le, puis rouvre cette app."),
-                    GSL(@"Open Havoc", @"Ouvrir Havoc"), GS_HAVOC_URL);
+                    GSS(@"req_title"),
+                    GSS(@"req_havoc"),
+                    GSS(@"open_havoc"), GS_HAVOC_URL);
             } else {
                 GSPresentAlert(
-                    GSL(@"Error: GroupedSettings17 missing", @"Erreur : GroupedSettings17 manquant"),
-                    [NSString stringWithFormat:GSL(
-                        @"GroupedSettings17 Addon for other Apps needs GroupedSettings17, which was not found on Havoc. Please install GroupedSettings17 from %@",
-                        @"GroupedSettings17 Addon for other Apps a besoin de GroupedSettings17, introuvable sur Havoc. Installe GroupedSettings17 depuis %@"),
-                        GS_GITHUB_URL],
-                    GSL(@"Open GitHub", @"Ouvrir GitHub"), GS_GITHUB_URL);
+                    GSS(@"err_title"),
+                    [NSString stringWithFormat:GSS(@"err_msg"), GS_GITHUB_URL],
+                    GSS(@"open_github"), GS_GITHUB_URL);
             }
         });
     }] resume];
@@ -569,28 +873,21 @@ static void GSScheduleMissingDependencyAlert(void) {
 - (NSArray *)specifiers;
 @end
 
-%group PrefsMenu
-%hook GSPRootListController
-- (NSArray *)specifiers {
-    NSArray *orig = %orig;
-    if (!orig.count) return orig;
-    for (PSSpecifier *s in orig) {
-        id key = [s propertyForKey:@"key"];
-        if ([key isKindOfClass:[NSString class]] && [(NSString *)key hasPrefix:@"addon."]) return orig; // déjà ajouté
-    }
+#define GS_LIST_KEY @"GSAddonList"   // propriété du lien : "apple" ou "third"
+
+// Groupe + un interrupteur par app (sert aux deux sous-menus).
+static NSArray *GSBuildAppSpecifiers(id target, NSArray<NSArray<NSString *> *> *apps,
+                                     BOOL defaultOn, NSString *footer) {
     Class specClass = NSClassFromString(@"PSSpecifier");
-    if (!specClass) return orig;
-
-    NSMutableArray *extra = [NSMutableArray array];
-    PSSpecifier *group = [specClass groupSpecifierWithName:GSL(@"Other Apps", @"Autres applications")];
-    [group setProperty:GSL(@"Enable or disable the edge-to-edge style for each app. Close and reopen the app after a change.",
-                           @"Active ou désactive le style bord à bord pour chaque app. Ferme puis rouvre l'app après un changement.")
-                forKey:@"footerText"];
-    [extra addObject:group];
-
-    for (NSArray<NSString *> *app in GSAddonApps()) {
-        PSSpecifier *sw = [specClass preferenceSpecifierNamed:GSIsFrench() ? app[2] : app[1]
-                                                       target:self
+    if (!specClass) return @[];
+    NSMutableArray *out = [NSMutableArray array];
+    PSSpecifier *group = [specClass groupSpecifierWithName:nil];
+    [group setProperty:footer forKey:@"footerText"];
+    [out addObject:group];
+    for (NSArray<NSString *> *app in apps) {
+        NSString *name = GSAppName(app[0], app[1]);
+        PSSpecifier *sw = [specClass preferenceSpecifierNamed:name
+                                                       target:target
                                                           set:@selector(setPreferenceValue:specifier:)
                                                           get:@selector(readPreferenceValue:)
                                                        detail:Nil
@@ -598,9 +895,81 @@ static void GSScheduleMissingDependencyAlert(void) {
                                                          edit:Nil];
         [sw setProperty:@"com.raphetsoso.groupedsettings17" forKey:@"defaults"];
         [sw setProperty:GSAddonKey(app[0]) forKey:@"key"];
-        [sw setProperty:@YES forKey:@"default"];
-        [sw setProperty:GSIsFrench() ? app[2] : app[1] forKey:@"label"];
-        [extra addObject:sw];
+        [sw setProperty:@(defaultOn) forKey:@"default"];
+        [sw setProperty:name forKey:@"label"];
+        [out addObject:sw];
+    }
+    return out;
+}
+
+// Contrôleur des sous-menus, créé à l'exécution (PSListController vit dans
+// Preferences.framework : pas de dépendance à l'édition de liens).
+static Class GSAddonListClass(void) {
+    Class c = objc_getClass("GSAddonListController");
+    if (c) return c;
+    Class sup = NSClassFromString(@"PSListController");
+    if (!sup) return Nil;
+    c = objc_allocateClassPair(sup, "GSAddonListController", 0);
+    if (!c) return Nil;
+
+    IMP imp = imp_implementationWithBlock(^NSArray *(id me) {
+        NSArray *cached = [me valueForKey:@"_specifiers"];
+        if (cached) return cached;
+        id spec = [me valueForKey:@"specifier"];
+        id kind = [(PSSpecifier *)spec propertyForKey:GS_LIST_KEY];
+        BOOL third = [kind isEqual:@"third"];
+        NSArray *specs = GSBuildAppSpecifiers(
+            me,
+            third ? GSThirdPartyApps() : GSAppleApps(),
+            !third,
+            third ? GSS(@"footer_third") : GSS(@"footer_apple"));
+        [me setValue:specs forKey:@"_specifiers"];
+        return specs;
+    });
+    class_addMethod(c, @selector(specifiers), imp, "@@:");
+    objc_registerClassPair(c);
+    return c;
+}
+
+%group PrefsMenu
+%hook GSPRootListController
+- (NSArray *)specifiers {
+    NSArray *orig = %orig;
+    if (!orig.count) return orig;
+    for (PSSpecifier *s in orig) {
+        id key = [s propertyForKey:@"GSAddonMarker"];
+        if (key) return orig; // déjà ajouté
+    }
+    Class specClass = NSClassFromString(@"PSSpecifier");
+    Class listClass = GSAddonListClass();
+    if (!specClass || !listClass) return orig;
+
+    // Précise que l'interrupteur du haut ne concerne que Réglages.
+    PSSpecifier *first = orig.firstObject;
+    id oldFooter = [first propertyForKey:@"footerText"];
+    NSString *note = GSS(@"top_note");
+    NSString *footer = ([oldFooter isKindOfClass:[NSString class]] && [(NSString *)oldFooter length])
+        ? [NSString stringWithFormat:@"%@\n\n%@", oldFooter, note] : note;
+    [first setProperty:footer forKey:@"footerText"];
+
+    // Deux sous-menus.
+    NSMutableArray *extra = [NSMutableArray array];
+    PSSpecifier *group = [specClass groupSpecifierWithName:GSS(@"group_title")];
+    [group setProperty:@YES forKey:@"GSAddonMarker"];
+    [extra addObject:group];
+
+    NSArray *kinds = @[@[@"apple", GSS(@"menu_apple")],
+                       @[@"third", GSS(@"menu_third")]];
+    for (NSArray<NSString *> *k in kinds) {
+        PSSpecifier *link = [specClass preferenceSpecifierNamed:k[1]
+                                                         target:self
+                                                            set:Nil
+                                                            get:Nil
+                                                         detail:listClass
+                                                           cell:1 /* PSLinkCell */
+                                                           edit:Nil];
+        [link setProperty:k[0] forKey:GS_LIST_KEY];
+        [extra addObject:link];
     }
 
     // Après l'interrupteur principal, avant le groupe du bouton Respring.
@@ -620,7 +989,7 @@ static BOOL GSInstallPrefsMenu(void) {
     if (!cls) return NO;
     installed = YES;
     %init(PrefsMenu, GSPRootListController = cls);
-    GSLog(@"menu GroupedSettings17 : interrupteurs ajoutés");
+    GSLog(@"menu GroupedSettings17 : sous-menus ajoutés");
     return YES;
 }
 
@@ -649,8 +1018,8 @@ static BOOL GSInstallPrefsMenu(void) {
         }
 
         // Apps ciblées.
-        BOOL targeted = NO;
-        for (NSArray<NSString *> *app in GSAddonApps()) {
+        BOOL targeted = GSIsThirdParty(bid);
+        for (NSArray<NSString *> *app in GSAppleApps()) {
             if ([app[0] isEqualToString:bid]) { targeted = YES; break; }
         }
         if (!targeted) return;
@@ -659,7 +1028,7 @@ static BOOL GSInstallPrefsMenu(void) {
             GSScheduleMissingDependencyAlert();
             return;
         }
-        if (!GSIsEnabledForKey(GSAddonKey(bid))) return;
+        if (!GSIsEnabledForKey(GSAddonKey(bid), !GSIsThirdParty(bid))) return;
 
         GSLog(@"charge dans %@ (iOS %@)", bid, [[UIDevice currentDevice] systemVersion]);
         GSInstallUIKitHooks();
