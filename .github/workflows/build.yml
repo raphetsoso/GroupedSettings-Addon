@@ -1,0 +1,30 @@
+name: Build GroupedSettings17Addon (rootless, arm64e)
+
+# Compilation sur macOS : seul moyen d'obtenir l'ABI arm64e "new" attendue par
+# iOS 15+ (la toolchain Linux/WSL produit une ABI incompatible).
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install make xz ldid
+
+      - name: Install Theos
+        run: |
+          git clone --recursive https://github.com/theos/theos.git "$HOME/theos"
+          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
+
+      - name: Build (rootless)
+        run: gmake clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+
+      - name: Upload .deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: GroupedSettings17Addon-deb
+          path: packages/*.deb
