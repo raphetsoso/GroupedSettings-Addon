@@ -526,6 +526,42 @@ static BOOL GSIsThirdParty(NSString *bundleID) {
     return NO;
 }
 
+// Détecte les apps installées qui ne figurent dans aucune liste.
+// { bundle id, nom }, triées par nom ; ignore les apps cachées et Réglages.
+static NSArray<NSArray<NSString *> *> *GSDetectOtherApps(void) {
+    NSMutableSet<NSString *> *known = [NSMutableSet setWithObjects:@"com.apple.Preferences", nil];
+    for (NSArray<NSString *> *a in GSAppleApps()) [known addObject:a[0]];
+    for (NSArray<NSString *> *a in GSThirdPartyApps()) [known addObject:a[0]];
+    NSString *own = [[NSBundle mainBundle] bundleIdentifier];
+    if (own) [known addObject:own];
+
+    NSMutableArray<NSArray<NSString *> *> *found = [NSMutableArray array];
+    @try {
+        Class wsClass = NSClassFromString(@"LSApplicationWorkspace");
+        id ws = [wsClass respondsToSelector:@selector(defaultWorkspace)]
+            ? [wsClass performSelector:@selector(defaultWorkspace)] : nil;
+        NSArray *apps = [ws respondsToSelector:@selector(allInstalledApplications)]
+            ? [ws performSelector:@selector(allInstalledApplications)] : nil;
+        for (id proxy in apps) {
+            NSString *bid = [proxy valueForKey:@"applicationIdentifier"];
+            if (![bid isKindOfClass:[NSString class]] || !bid.length || [known containsObject:bid]) continue;
+            id tags = [proxy respondsToSelector:NSSelectorFromString(@"appTags")]
+                ? [proxy valueForKey:@"appTags"] : nil;
+            if ([tags isKindOfClass:[NSArray class]] && [(NSArray *)tags containsObject:@"hidden"]) continue;
+            NSString *name = [proxy valueForKey:@"localizedName"];
+            if (![name isKindOfClass:[NSString class]] || !name.length) continue;
+            [found addObject:@[bid, name]];
+            [known addObject:bid];
+        }
+    } @catch (NSException *e) {
+        GSLog(@"détection des apps : %@", e);
+    }
+    [found sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) {
+        return [a[1] localizedCaseInsensitiveCompare:b[1]];
+    }];
+    return found;
+}
+
 static NSString *GSAddonKey(NSString *bundleID) {
     return [@"addon." stringByAppendingString:bundleID];
 }
@@ -726,18 +762,18 @@ static NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *GSStrin
                 @"pt": @"Apps da Apple. Após uma alteração, feche e reabra a app.",
             },
             @"footer_third": @{
-                @"en": @"Popular third-party apps, off by default. Close and reopen an app after a change.",
-                @"fr": @"Apps tierces populaires, désactivées par défaut. Ferme puis rouvre l'app après un changement.",
-                @"de": @"Beliebte Apps von Drittanbietern, standardmäßig aus. Nach einer Änderung die App schließen und erneut öffnen.",
-                @"it": @"App di terze parti popolari, disattivate per impostazione predefinita. Dopo una modifica, chiudi e riapri l'app.",
-                @"ru": @"Популярные сторонние приложения, по умолчанию выключены. После изменения закройте и снова откройте приложение.",
-                @"zh-Hans": @"热门第三方 App，默认关闭。更改后请关闭并重新打开对应 App。",
-                @"zh-Hant": @"熱門第三方 App，預設為關閉。變更後請關閉並重新打開對應 App。",
-                @"ja": @"人気のサードパーティApp（初期設定ではオフ）。変更後はAppを終了してからもう一度開いてください。",
-                @"vi": @"Các ứng dụng bên thứ ba phổ biến, mặc định tắt. Sau khi thay đổi, hãy đóng rồi mở lại ứng dụng.",
-                @"ar": @"تطبيقات شائعة من جهات خارجية، متوقفة افتراضيًا. بعد أي تغيير، أغلق التطبيق ثم افتحه من جديد.",
-                @"es": @"Apps de terceros populares, desactivadas por defecto. Tras un cambio, cierra y vuelve a abrir la app.",
-                @"pt": @"Apps de terceiros populares, desativadas por predefinição. Após uma alteração, feche e reabra a app.",
+                @"en": @"Third-party apps, popular ones and those detected on this device, off by default. Close and reopen an app after a change.",
+                @"fr": @"Apps tierces, populaires et détectées sur cet appareil, désactivées par défaut. Ferme puis rouvre l'app après un changement.",
+                @"de": @"Apps von Drittanbietern, beliebte und auf diesem Gerät gefundene, standardmäßig aus. Nach einer Änderung die App schließen und erneut öffnen.",
+                @"it": @"App di terze parti, popolari e rilevate su questo dispositivo, disattivate per impostazione predefinita. Dopo una modifica, chiudi e riapri l'app.",
+                @"ru": @"Сторонние приложения — популярные и найденные на этом устройстве, по умолчанию выключены. После изменения закройте и снова откройте приложение.",
+                @"zh-Hans": @"第三方 App（热门及在此设备上检测到的），默认关闭。更改后请关闭并重新打开对应 App。",
+                @"zh-Hant": @"第三方 App（熱門及在此裝置上偵測到的），預設為關閉。變更後請關閉並重新打開對應 App。",
+                @"ja": @"サードパーティApp（人気のものと、このデバイスで検出されたもの）。初期設定ではオフ。変更後はAppを終了してからもう一度開いてください。",
+                @"vi": @"Ứng dụng bên thứ ba, phổ biến và được phát hiện trên thiết bị này, mặc định tắt. Sau khi thay đổi, hãy đóng rồi mở lại ứng dụng.",
+                @"ar": @"تطبيقات الجهات الخارجية، الشائعة والمكتشفة على هذا الجهاز، متوقفة افتراضيًا. بعد أي تغيير، أغلق التطبيق ثم افتحه من جديد.",
+                @"es": @"Apps de terceros, populares y detectadas en este dispositivo, desactivadas por defecto. Tras un cambio, cierra y vuelve a abrir la app.",
+                @"pt": @"Apps de terceiros, populares e detetadas neste dispositivo, desativadas por predefinição. Após uma alteração, feche e reabra a app.",
             },
         };
     });
@@ -873,6 +909,20 @@ static void GSScheduleMissingDependencyAlert(void) {
 - (NSArray *)specifiers;
 @end
 
+// Menu "Apps tierces" : apps populaires + toutes les autres apps installées
+// détectées automatiquement, triées par nom.
+static NSArray<NSArray<NSString *> *> *GSAllThirdPartyApps(void) {
+    NSMutableArray<NSArray<NSString *> *> *all = [NSMutableArray array];
+    for (NSArray<NSString *> *a in GSThirdPartyApps()) {
+        [all addObject:@[a[0], GSAppName(a[0], a[1])]];
+    }
+    [all addObjectsFromArray:GSDetectOtherApps()];
+    [all sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) {
+        return [a[1] localizedCaseInsensitiveCompare:b[1]];
+    }];
+    return all;
+}
+
 #define GS_LIST_KEY @"GSAddonList"   // propriété du lien : "apple" ou "third"
 
 // Groupe + un interrupteur par app (sert aux deux sous-menus).
@@ -920,9 +970,9 @@ static Class GSAddonListClass(void) {
         BOOL third = [kind isEqual:@"third"];
         NSArray *specs = GSBuildAppSpecifiers(
             me,
-            third ? GSThirdPartyApps() : GSAppleApps(),
+            third ? GSAllThirdPartyApps() : GSAppleApps(),
             !third,
-            third ? GSS(@"footer_third") : GSS(@"footer_apple"));
+            GSS(third ? @"footer_third" : @"footer_apple"));
         [me setValue:specs forKey:@"_specifiers"];
         return specs;
     });
@@ -1017,18 +1067,23 @@ static BOOL GSInstallPrefsMenu(void) {
             return;
         }
 
-        // Apps ciblées.
-        BOOL targeted = GSIsThirdParty(bid);
+        // Apps connues (listes) : alerte si GroupedSettings17 manque.
+        BOOL known = GSIsThirdParty(bid);
         for (NSArray<NSString *> *app in GSAppleApps()) {
-            if ([app[0] isEqualToString:bid]) { targeted = YES; break; }
+            if ([app[0] isEqualToString:bid]) { known = YES; break; }
         }
-        if (!targeted) return;
-
-        if (GSDependencyMissing()) {
-            GSScheduleMissingDependencyAlert();
-            return;
+        if (known) {
+            if (GSDependencyMissing()) {
+                GSScheduleMissingDependencyAlert();
+                return;
+            }
+            if (!GSIsEnabledForKey(GSAddonKey(bid), !GSIsThirdParty(bid))) return;
+        } else {
+            // App détectée automatiquement : active seulement si son interrupteur
+            // a été mis (défaut : désactivé). Sans alerte si GroupedSettings17 manque.
+            if (!GSIsEnabledForKey(GSAddonKey(bid), NO)) return;
+            if (GSDependencyMissing()) return;
         }
-        if (!GSIsEnabledForKey(GSAddonKey(bid), !GSIsThirdParty(bid))) return;
 
         GSLog(@"charge dans %@ (iOS %@)", bid, [[UIDevice currentDevice] systemVersion]);
         GSInstallUIKitHooks();
