@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Filter</key>
+	<dict>
+		<key>Bundles</key>
+		<array>
+			<string>com.apple.Preferences</string>
+			<string>com.apple.tips</string>
+			<string>com.apple.MobileAddressBook</string>
+			<string>com.apple.mobilephone</string>
+			<string>com.apple.mobilesafari</string>
+			<string>com.apple.DocumentsApp</string>
+			<string>com.apple.mobilemail</string>
+			<string>com.apple.Health</string>
+			<string>com.apple.mobileslideshow</string>
+			<string>com.apple.camera</string>
+			<string>com.apple.mobiletimer</string>
+			<string>com.apple.Maps</string>
+			<string>com.apple.weather</string>
+			<string>com.apple.reminders</string>
+			<string>com.apple.Fitness</string>
+			<string>com.apple.findmy</string>
+			<string>com.apple.Translate</string>
+			<string>com.apple.freeform</string>
+			<string>com.apple.VoiceMemos</string>
+			<string>com.apple.iBooks</string>
+		</array>
+	</dict>
+</dict>
+</plist>

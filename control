@@ -1,0 +1,9 @@
+Package: com.raphetsoso.groupedsettings17addon
+Name: GroupedSettings17 Addon for other Apps
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: Edge-to-edge style for Tips, Contacts, Phone, Safari, Files, Mail, Health, Photos, Camera, Clock, Maps, Weather, Reminders, Fitness, Find My, Translate, Freeform, Voice Memos and Books. Requires GroupedSettings17 (per-app toggles are in its Settings panel)
+Maintainer: raphetsoso
+Author: raphetsoso
+Section: Tweaks
+Depends: mobilesubstrate, com.raphetsoso.groupedsettings17
