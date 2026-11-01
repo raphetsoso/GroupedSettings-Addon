@@ -12,3 +12,7 @@ GroupedSettings17Addon_FRAMEWORKS = UIKit Foundation
 GroupedSettings17Addon_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-unused-function
 
 include $(THEOS_MAKE_PATH)/tweak.mk
+
+# Make sure the maintainer script is executable even if git/zip lost the exec bit
+after-stage::
+	@chmod 755 $(THEOS_STAGING_DIR)/DEBIAN/preinst
