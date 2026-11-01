@@ -13,25 +13,26 @@ An iOS tweak designed to adapt and apply the exact visual customization logic fr
 - **Frameworks:** UIKit, Logos (Theos)
 - **Origin:** Adaptation of the GroupedSettings17 source code logic, modified to hook into selected application bundle IDs.
 
-## Détection des apps
+## App detection
 
-Les sous-menus ne proposent que les apps **réellement installées** sur l'appareil
-(lecture de `LSApplicationWorkspace`, recalculée à chaque ouverture du sous-menu) :
+The sub-menus only list apps that are **actually installed** on the device
+(read from `LSApplicationWorkspace`, recomputed every time a sub-menu is opened):
 
-- les apps Apple et tierces « populaires » des listes intégrées sont masquées si elles
-  ne sont pas installées (ex. app Apple supprimée, WhatsApp absent) ;
-- les apps en cours de téléchargement (placeholders), déchargées ou supprimées sont ignorées ;
-- les autres apps installées sont ajoutées automatiquement au menu « Apps tierces » ;
-- si l'API système est indisponible, les listes intégrées sont affichées telles quelles
-  (plutôt qu'un menu vide).
+- built-in Apple and "popular" third-party apps are hidden if they are not installed
+  (e.g. a removed Apple app, WhatsApp not present);
+- apps that are still downloading (placeholders), offloaded or deleted are ignored;
+- any other installed app is automatically added to the "Third-party apps" menu;
+- if the system API is unavailable, the built-in lists are shown as-is
+  (rather than an empty menu).
 
-## Santé et Forme (couche E)
+## Dependency and repository
 
-Ces deux apps affichent leurs grandes cartes dans des `UICollectionView` en compositional layout
-(et non des `UITableView`). Une couche dédiée, active uniquement dans `com.apple.Health` et
-`com.apple.Fitness`, met à zéro les marges latérales des sections et des items symétriques,
-remplace la référence d'inset « marges de mise en page » par la zone sûre, et supprime les
-rayons de coin des cartes pleine largeur.
+This addon requires **GroupedSettings17** (`com.raphetsoso.groupedsettings17`), declared as a
+`Depends`. That package is **not available on Havoc**; it is distributed on this repository:
 
-Diagnostic (`GS_DEBUG=1`) : ouvrir Santé / Forme puis lire
-`/var/mobile/Library/Preferences/GroupedSettings17Addon.log` (lignes `COUCHE E` et `CARDCELL`).
+https://raphetsoso.github.io/repo/
+
+Add the repository to Sileo / Zebra / Cydia, then install the addon: GroupedSettings17 will be
+installed automatically. If the repository has not been added, the package manager will show a
+missing dependency error (`com.raphetsoso.groupedsettings17`): in that case, add the repository
+above. When installing through `dpkg`, the `preinst` script prints the same advice.

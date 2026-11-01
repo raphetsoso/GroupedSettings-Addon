@@ -1,0 +1,35 @@
+#!/bin/sh
+# Vérifie que GroupedSettings17 est installé avant d'installer l'addon.
+# Affiche un message clair (au lieu de l'erreur générique du gestionnaire de paquets).
+
+export PATH="/var/jb/usr/bin:/var/jb/bin:/usr/bin:/bin:$PATH"
+
+case "$1" in
+  install|upgrade)
+    if command -v dpkg-query >/dev/null 2>&1; then
+      STATUS=$(dpkg-query -W -f='${Status}' com.raphetsoso.groupedsettings17 2>/dev/null)
+      case "$STATUS" in
+        *"install ok installed"*) ;;
+        *)
+          echo "" >&2
+          echo "==================================================" >&2
+          echo " ERREUR : GroupedSettings17 n'est pas installé." >&2
+          echo "" >&2
+          echo " Ce paquet n'est PAS disponible sur Havoc." >&2
+          echo " Ajoutez d'abord ce dépôt dans votre gestionnaire" >&2
+          echo " de paquets (Sileo / Zebra / Cydia) :" >&2
+          echo "" >&2
+          echo "   https://raphetsoso.github.io/repo/" >&2
+          echo "" >&2
+          echo " puis installez « GroupedSettings17 » (identifiant :" >&2
+          echo " com.raphetsoso.groupedsettings17) avant cet addon." >&2
+          echo "==================================================" >&2
+          echo "" >&2
+          exit 1
+          ;;
+      esac
+    fi
+    ;;
+esac
+
+exit 0
