@@ -13,6 +13,6 @@ GroupedSettings17Addon_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-unu
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
-# Make sure the maintainer script is executable even if git/zip lost the exec bit
-after-stage::
-	@chmod 755 $(THEOS_STAGING_DIR)/DEBIAN/preinst
+# git/zip uploads can drop the exec bit; dpkg requires maintainer scripts to be 0555-0775.
+# Fix the source script before Theos copies layout/DEBIAN into the package.
+_ := $(shell chmod 755 layout/DEBIAN/preinst 2>/dev/null)
