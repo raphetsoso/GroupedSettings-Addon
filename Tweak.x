@@ -28,6 +28,7 @@
 //   B. UITableView      : marges et rayon de section à 0.
 //   C. UITableViewCell  : fond de cellule et highlight plats, pleine largeur.
 //   D. UICollectionView : listes insetGrouped converties en grouped.
+//   E. Cartes UICollectionView (Santé, Forme) : marges du layout + rayons.
 // ---------------------------------------------------------------------------
 
 #define GS_DOMAIN CFSTR("com.raphetsoso.groupedsettings17")   // domaine de GroupedSettings17
@@ -378,6 +379,229 @@ static void GSLogAppearanceOnce(const char *tag, long value) {
 %end
 
 // ===========================================================================
+// COUCHE E : cartes UICollectionView (Santé, Forme)
+//
+// Ces apps n'utilisent pas des UITableView : leurs grandes cartes vivent dans
+// des UICollectionView en "compositional layout". Les marges latérales viennent
+// donc (1) des contentInsets des sections / groupes / items du layout,
+// (2) de la référence d'inset (marges de mise en page) et (3) du rayon de coin
+// des vues de fond des cellules. Les trois sont traités ici, uniquement dans
+// ces apps (le reste du tweak est inchangé).
+// ===========================================================================
+
+static BOOL GSIsCardApp(void) {
+    static BOOL value, done;
+    if (!done) {
+        NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+        value = [bid isEqualToString:@"com.apple.Health"] || [bid isEqualToString:@"com.apple.Fitness"];
+        done = YES;
+    }
+    return value;
+}
+
+static BOOL GSReturnsDirectionalInsets(Class cls, SEL sel) {
+    Method m = class_getInstanceMethod(cls, sel);
+    if (!m) return NO;
+    char *rt = method_copyReturnType(m);
+    BOOL ok = (rt && rt[0] == '{' && strstr(rt, "NSDirectionalEdgeInsets") != NULL);
+    free(rt);
+    return ok;
+}
+
+static BOOL GSSetterTakesDirectionalInsets(Class cls, SEL sel) {
+    Method m = class_getInstanceMethod(cls, sel);
+    if (!m || method_getNumberOfArguments(m) != 3) return NO;
+    char *at = method_copyArgumentType(m, 2);
+    BOOL ok = (at && at[0] == '{' && strstr(at, "NSDirectionalEdgeInsets") != NULL);
+    free(at);
+    return ok;
+}
+
+static BOOL GSIsIntegerAccessor(Class cls, SEL sel, BOOL setter) {
+    Method m = class_getInstanceMethod(cls, sel);
+    if (!m) return NO;
+    if (setter) {
+        if (method_getNumberOfArguments(m) != 3) return NO;
+        char *at = method_copyArgumentType(m, 2);
+        BOOL ok = (at && (at[0] == 'q' || at[0] == 'l'));
+        free(at);
+        return ok;
+    }
+    char *rt = method_copyReturnType(m);
+    BOOL ok = (rt && (rt[0] == 'q' || rt[0] == 'l'));
+    free(rt);
+    return ok;
+}
+
+// Marges gauche/droite à zéro (haut/bas conservés : espacement vertical des cartes).
+static inline NSDirectionalEdgeInsets GSEdgeToEdge(NSDirectionalEdgeInsets i) {
+    i.leading = 0;
+    i.trailing = 0;
+    return i;
+}
+
+// Marges symétriques d'un item/groupe (= marge de la carte) ; les écarts entre
+// items voisins sont asymétriques et restent donc intacts.
+static inline NSDirectionalEdgeInsets GSEdgeToEdgeIfSymmetric(NSDirectionalEdgeInsets i) {
+    if (i.leading > 0 && fabs(i.leading - i.trailing) < 0.01) {
+        i.leading = 0;
+        i.trailing = 0;
+    }
+    return i;
+}
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunguarded-availability-new"
+// layoutMargins / readableContent -> safeArea : pleine largeur en portrait,
+// mais le contenu reste hors de l'encoche en paysage.
+static inline NSInteger GSMapInsetsReference(NSInteger ref) {
+    if (ref == (NSInteger)UIContentInsetsReferenceLayoutMargins ||
+        ref == (NSInteger)UIContentInsetsReferenceReadableContent) {
+        return (NSInteger)UIContentInsetsReferenceSafeArea;
+    }
+    return ref;
+}
+#pragma clang diagnostic pop
+
+%group CardSectionInsets
+%hook NSCollectionLayoutSection
+- (NSDirectionalEdgeInsets)contentInsets {
+    return GSEdgeToEdge(%orig);
+}
+- (void)setContentInsets:(NSDirectionalEdgeInsets)insets {
+    %orig(GSEdgeToEdge(insets));
+}
+%end
+%end
+
+%group CardItemInsets
+%hook NSCollectionLayoutItem
+- (NSDirectionalEdgeInsets)contentInsets {
+    return GSEdgeToEdgeIfSymmetric(%orig);
+}
+- (void)setContentInsets:(NSDirectionalEdgeInsets)insets {
+    %orig(GSEdgeToEdgeIfSymmetric(insets));
+}
+%end
+%end
+
+%group CardInsetsReference
+%hook NSCollectionLayoutSection
+- (NSInteger)contentInsetsReference {
+    return GSMapInsetsReference(%orig);
+}
+- (void)setContentInsetsReference:(NSInteger)ref {
+    %orig(GSMapInsetsReference(ref));
+}
+%end
+%end
+
+// Rayon des vues "carte" : sous-vues quasi pleine largeur de la cellule avec un
+// rayon de carte (6-40 pt). Exclut les capsules (rayon = hauteur/2), les
+// contrôles, les icônes et les petites vignettes.
+static BOOL GSFlattenCardTree(UIView *view, UIView *root, CGFloat rootWidth, NSUInteger depth) {
+    if (depth > 5) return NO;
+    BOOL found = NO;
+    for (UIView *sub in view.subviews) {
+        CGFloat r = sub.layer.cornerRadius;
+        if (r >= 6 && r <= 40 && ![sub isKindOfClass:[UIControl class]]) {
+            CGRect f = [sub convertRect:sub.bounds toView:root];
+            BOOL capsule = r >= sub.bounds.size.height / 2.0 - 0.5;
+            if (!capsule && f.size.width >= rootWidth * 0.8) {
+                sub.layer.cornerRadius = 0;
+                found = YES;
+            }
+        }
+        if (GSFlattenCardTree(sub, root, rootWidth, depth + 1)) found = YES;
+    }
+    return found;
+}
+
+#if GS_DEBUG
+// Une fois par classe de cellule : hiérarchie AVANT aplatissement (diagnostic).
+static void GSProbeCardCell(UICollectionViewCell *cell) {
+    static NSMutableSet *seen;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ seen = [NSMutableSet set]; });
+    NSString *key = NSStringFromClass([cell class]);
+    if ([seen containsObject:key] || seen.count > 30 || !cell.window) return;
+    [seen addObject:key];
+    UIView *cv = cell.superview;
+    while (cv && ![cv isKindOfClass:[UICollectionView class]]) cv = cv.superview;
+    NSMutableString *out = [NSMutableString stringWithFormat:
+        @"CARDCELL %@ frame=%@ collection=%@ bgCfgRadius=%.1f", key,
+        NSStringFromCGRect(cell.frame), cv ? NSStringFromCGRect(cv.frame) : @"nil",
+        cell.backgroundConfiguration ? cell.backgroundConfiguration.cornerRadius : -1.0];
+    GSProbeAppend(out, cell, 0, 4);
+    GSLog(@"%@", out);
+}
+#endif
+
+static void GSFlattenCardCell(UICollectionViewCell *cell) {
+    if (!cell.window) return;
+#if GS_DEBUG
+    GSProbeCardCell(cell);
+#endif
+    UIBackgroundConfiguration *cfg = cell.backgroundConfiguration;
+    if (cfg) {
+        UIBackgroundConfiguration *flat = GSFlatConfiguration(cfg);
+        if (flat != cfg) cell.backgroundConfiguration = flat;
+    }
+    GSFlattenView(cell);
+    GSFlattenView(cell.backgroundView);
+    GSFlattenView(cell.selectedBackgroundView);
+    CGFloat w = cell.bounds.size.width;
+    if (w > 0) GSFlattenCardTree(cell, cell, w, 0);
+}
+
+%group CardCells
+%hook UICollectionViewCell
+- (void)layoutSubviews {
+    %orig;
+    GSFlattenCardCell(self);
+}
+- (void)setBackgroundConfiguration:(UIBackgroundConfiguration *)configuration {
+    %orig(configuration ? GSFlatConfiguration(configuration) : configuration);
+}
+%end
+%end
+
+%group CardCellDefaultBackground
+%hook UICollectionViewCell
+- (UIBackgroundConfiguration *)defaultBackgroundConfiguration {
+    return GSFlatConfiguration(%orig);
+}
+%end
+%end
+
+static void GSInstallCardHooks(void) {
+    Class section = objc_getClass("NSCollectionLayoutSection");
+    Class item    = objc_getClass("NSCollectionLayoutItem");
+    Class cell    = objc_getClass("UICollectionViewCell");
+
+    BOOL sectionOK = section &&
+        GSReturnsDirectionalInsets(section, NSSelectorFromString(@"contentInsets")) &&
+        GSSetterTakesDirectionalInsets(section, NSSelectorFromString(@"setContentInsets:"));
+    BOOL itemOK = item &&
+        GSReturnsDirectionalInsets(item, NSSelectorFromString(@"contentInsets")) &&
+        GSSetterTakesDirectionalInsets(item, NSSelectorFromString(@"setContentInsets:"));
+    BOOL refOK = section &&
+        GSIsIntegerAccessor(section, NSSelectorFromString(@"contentInsetsReference"), NO) &&
+        GSIsIntegerAccessor(section, NSSelectorFromString(@"setContentInsetsReference:"), YES);
+    GSLog(@"COUCHE E : section=%d item=%d reference=%d cell=%d", sectionOK, itemOK, refOK, cell != Nil);
+
+    if (sectionOK) { %init(CardSectionInsets); }
+    if (itemOK)    { %init(CardItemInsets); }
+    if (refOK)     { %init(CardInsetsReference); }
+    if (cell) {
+        %init(CardCells);
+        if (GSReturnsObject(cell, @selector(defaultBackgroundConfiguration))) {
+            %init(CardCellDefaultBackground);
+        }
+    }
+}
+
+// ===========================================================================
 // Installation
 // ===========================================================================
 
@@ -412,6 +636,9 @@ static void GSInstallUIKitHooks(void) {
                 %init(CellDefaultBackground);
             }
         }
+
+        // Santé / Forme : cartes en UICollectionView (couche E).
+        if (GSIsCardApp()) GSInstallCardHooks();
     });
 }
 
@@ -526,9 +753,86 @@ static BOOL GSIsThirdParty(NSString *bundleID) {
     return NO;
 }
 
-// Détecte les apps installées qui ne figurent dans aucune liste.
+// ---------------------------------------------------------------------------
+// Apps RÉELLEMENT installées sur l'appareil
+//
+// Source unique : LSApplicationWorkspace. On écarte les apps qui ne sont pas
+// vraiment utilisables : placeholders (téléchargement en cours), apps déchargées
+// ou supprimées (appState non installé), et signale celles cachées par le système.
+// Renvoie { bundle id : { @"name" : nom localisé, @"hidden" : BOOL } },
+// ou nil si l'API est indisponible (l'appelant ne filtre alors pas, afin
+// d'éviter un menu vide).
+// ---------------------------------------------------------------------------
+
+static BOOL GSObjectFlag(id obj, NSString *selName, BOOL fallback) {
+    SEL sel = NSSelectorFromString(selName);
+    if (!obj || ![obj respondsToSelector:sel]) return fallback;
+    return ((BOOL (*)(id, SEL))objc_msgSend)(obj, sel);
+}
+
+static id GSObjectGet(id obj, NSString *selName) {
+    SEL sel = NSSelectorFromString(selName);
+    if (!obj || ![obj respondsToSelector:sel]) return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(obj, sel);
+}
+
+static NSDictionary<NSString *, NSDictionary *> *GSInstalledApps(void) {
+    NSMutableDictionary<NSString *, NSDictionary *> *result = [NSMutableDictionary dictionary];
+    @try {
+        Class wsClass = NSClassFromString(@"LSApplicationWorkspace");
+        id ws = GSObjectGet(wsClass, @"defaultWorkspace");
+        id apps = GSObjectGet(ws, @"allInstalledApplications");
+        if (![apps isKindOfClass:[NSArray class]]) {
+            GSLog(@"apps installées : API indisponible");
+            return nil;
+        }
+        for (id proxy in (NSArray *)apps) {
+            @try {   // une app défaillante ne doit pas interrompre toute la détection
+                id bid = GSObjectGet(proxy, @"applicationIdentifier");
+                if (![bid isKindOfClass:[NSString class]] || ![(NSString *)bid length]) continue;
+
+                // Pas vraiment installée : téléchargement en cours / déchargée / supprimée.
+                if (GSObjectFlag(proxy, @"isPlaceholder", NO)) continue;
+                id state = GSObjectGet(proxy, @"appState");
+                if (state && !GSObjectFlag(state, @"isInstalled", YES)) continue;
+
+                id tags = GSObjectGet(proxy, @"appTags");
+                BOOL hidden = [tags isKindOfClass:[NSArray class]] && [(NSArray *)tags containsObject:@"hidden"];
+
+                id name = GSObjectGet(proxy, @"localizedName");
+                if (![name isKindOfClass:[NSString class]]) name = @"";
+
+                result[bid] = @{@"name": name, @"hidden": @(hidden)};
+            } @catch (NSException *e) {
+                GSLog(@"app ignorée : %@", e);
+            }
+        }
+    } @catch (NSException *e) {
+        GSLog(@"détection des apps : %@", e);
+        return nil;
+    }
+    if (!result.count) return nil;
+    GSLog(@"apps réellement installées : %lu", (unsigned long)result.count);
+    return result;
+}
+
+// Ne garde d'une liste prédéfinie que les apps réellement installées.
+// installed == nil (API indisponible) : liste inchangée.
+static NSArray<NSArray<NSString *> *> *GSFilterInstalled(NSArray<NSArray<NSString *> *> *list,
+                                                         NSDictionary<NSString *, NSDictionary *> *installed) {
+    if (!installed) return list;
+    NSMutableArray<NSArray<NSString *> *> *out = [NSMutableArray arrayWithCapacity:list.count];
+    for (NSArray<NSString *> *app in list) {
+        if (installed[app[0]]) [out addObject:app];
+        else GSLog(@"non installée, masquée : %@", app[0]);
+    }
+    return out;
+}
+
+// Apps installées qui ne figurent dans aucune liste.
 // { bundle id, nom }, triées par nom ; ignore les apps cachées et Réglages.
-static NSArray<NSArray<NSString *> *> *GSDetectOtherApps(void) {
+static NSArray<NSArray<NSString *> *> *GSDetectOtherApps(NSDictionary<NSString *, NSDictionary *> *installed) {
+    if (!installed) return @[];
     NSMutableSet<NSString *> *known = [NSMutableSet setWithObjects:@"com.apple.Preferences", nil];
     for (NSArray<NSString *> *a in GSAppleApps()) [known addObject:a[0]];
     for (NSArray<NSString *> *a in GSThirdPartyApps()) [known addObject:a[0]];
@@ -536,26 +840,12 @@ static NSArray<NSArray<NSString *> *> *GSDetectOtherApps(void) {
     if (own) [known addObject:own];
 
     NSMutableArray<NSArray<NSString *> *> *found = [NSMutableArray array];
-    @try {
-        Class wsClass = NSClassFromString(@"LSApplicationWorkspace");
-        id ws = [wsClass respondsToSelector:@selector(defaultWorkspace)]
-            ? [wsClass performSelector:@selector(defaultWorkspace)] : nil;
-        NSArray *apps = [ws respondsToSelector:@selector(allInstalledApplications)]
-            ? [ws performSelector:@selector(allInstalledApplications)] : nil;
-        for (id proxy in apps) {
-            NSString *bid = [proxy valueForKey:@"applicationIdentifier"];
-            if (![bid isKindOfClass:[NSString class]] || !bid.length || [known containsObject:bid]) continue;
-            id tags = [proxy respondsToSelector:NSSelectorFromString(@"appTags")]
-                ? [proxy valueForKey:@"appTags"] : nil;
-            if ([tags isKindOfClass:[NSArray class]] && [(NSArray *)tags containsObject:@"hidden"]) continue;
-            NSString *name = [proxy valueForKey:@"localizedName"];
-            if (![name isKindOfClass:[NSString class]] || !name.length) continue;
-            [found addObject:@[bid, name]];
-            [known addObject:bid];
-        }
-    } @catch (NSException *e) {
-        GSLog(@"détection des apps : %@", e);
-    }
+    [installed enumerateKeysAndObjectsUsingBlock:^(NSString *bid, NSDictionary *info, BOOL *stop) {
+        if ([known containsObject:bid] || [info[@"hidden"] boolValue]) return;
+        NSString *name = info[@"name"];
+        if (!name.length) return;
+        [found addObject:@[bid, name]];
+    }];
     [found sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) {
         return [a[1] localizedCaseInsensitiveCompare:b[1]];
     }];
@@ -909,14 +1199,14 @@ static void GSScheduleMissingDependencyAlert(void) {
 - (NSArray *)specifiers;
 @end
 
-// Menu "Apps tierces" : apps populaires + toutes les autres apps installées
-// détectées automatiquement, triées par nom.
-static NSArray<NSArray<NSString *> *> *GSAllThirdPartyApps(void) {
+// Menu "Apps tierces" : apps populaires RÉELLEMENT installées + toutes les
+// autres apps installées détectées automatiquement, triées par nom.
+static NSArray<NSArray<NSString *> *> *GSAllThirdPartyApps(NSDictionary<NSString *, NSDictionary *> *installed) {
     NSMutableArray<NSArray<NSString *> *> *all = [NSMutableArray array];
-    for (NSArray<NSString *> *a in GSThirdPartyApps()) {
+    for (NSArray<NSString *> *a in GSFilterInstalled(GSThirdPartyApps(), installed)) {
         [all addObject:@[a[0], GSAppName(a[0], a[1])]];
     }
-    [all addObjectsFromArray:GSDetectOtherApps()];
+    [all addObjectsFromArray:GSDetectOtherApps(installed)];
     [all sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) {
         return [a[1] localizedCaseInsensitiveCompare:b[1]];
     }];
@@ -968,9 +1258,12 @@ static Class GSAddonListClass(void) {
         id spec = [me valueForKey:@"specifier"];
         id kind = [(PSSpecifier *)spec propertyForKey:GS_LIST_KEY];
         BOOL third = [kind isEqual:@"third"];
+        // Liste recalculée à chaque ouverture du sous-menu : seules les apps
+        // réellement installées à cet instant sont proposées.
+        NSDictionary *installed = GSInstalledApps();
         NSArray *specs = GSBuildAppSpecifiers(
             me,
-            third ? GSAllThirdPartyApps() : GSAppleApps(),
+            third ? GSAllThirdPartyApps(installed) : GSFilterInstalled(GSAppleApps(), installed),
             !third,
             GSS(third ? @"footer_third" : @"footer_apple"));
         [me setValue:specs forKey:@"_specifiers"];
