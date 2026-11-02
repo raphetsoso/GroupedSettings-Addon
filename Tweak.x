@@ -28,7 +28,10 @@
 //   B. UITableView      : marges et rayon de section à 0.
 //   C. UITableViewCell  : fond de cellule et highlight plats, pleine largeur.
 //   D. UICollectionView : listes insetGrouped converties en grouped.
-//   E. Cartes UICollectionView (Santé, Forme) : marges du layout + rayons.
+//   E. Cartes UICollectionView : marges du layout + rayons. Santé/Forme d'office ;
+//      dans toute autre app dès qu'une carte arrondie pleine largeur est détectée.
+//   F. Marge de texte : le contenu aplati garde GS_TEXT_MARGIN pt de marge
+//      (cellules, en-têtes/pieds de section, cartes) au lieu de coller au bord.
 // ---------------------------------------------------------------------------
 
 #define GS_DOMAIN CFSTR("com.raphetsoso.groupedsettings17")   // domaine de GroupedSettings17
@@ -155,6 +158,49 @@ static void GSFlattenView(UIView *view) {
     if (view && view.layer.cornerRadius != 0) view.layer.cornerRadius = 0;
 }
 
+// Défini plus bas (couche E) : aplatit les cartes arrondies quasi pleine largeur.
+static BOOL GSFlattenCardTree(UIView *view, UIView *root, CGFloat rootWidth, NSUInteger depth);
+
+// ---------------------------------------------------------------------------
+// Marge de texte (couche F)
+//
+// En passant en pleine largeur (inset de section = 0), le contenu perd la marge
+// que la section lui donnait : le texte se retrouve collé au bord gauche. On
+// impose donc une marge minimale (directionnelle : OK en RTL ; la zone sûre est
+// conservée par UIKit en paysage). On ne fait que RELEVER une marge trop petite.
+// Au plus 3 écritures par largeur et par vue : pas de boucle de mise en page
+// si UIKit réécrit lui-même ses marges.
+// ---------------------------------------------------------------------------
+#define GS_TEXT_MARGIN 20.0
+
+static void *kGSMarginStateKey = &kGSMarginStateKey;
+
+static BOOL GSRaiseMargins(UIView *view) {
+    if (!view) return NO;
+    NSDirectionalEdgeInsets m = view.directionalLayoutMargins;
+    if (m.leading >= GS_TEXT_MARGIN - 0.01 && m.trailing >= GS_TEXT_MARGIN - 0.01) return NO;
+    m.leading = MAX(m.leading, (CGFloat)GS_TEXT_MARGIN);
+    m.trailing = MAX(m.trailing, (CGFloat)GS_TEXT_MARGIN);
+    view.directionalLayoutMargins = m;
+    return YES;
+}
+
+static void GSApplyTextMargins(UIView *owner, UIView *content) {
+    if (!owner || !content) return;
+    CGFloat w = owner.bounds.size.width;
+    if (w <= 0) return;
+    NSArray *st = objc_getAssociatedObject(owner, kGSMarginStateKey);
+    NSUInteger count = 0;
+    if (st.count == 2 && fabs([st[0] doubleValue] - w) < 0.5) count = [st[1] unsignedIntegerValue];
+    if (count >= 3) return;
+    BOOL changed = GSRaiseMargins(owner);
+    if (GSRaiseMargins(content)) changed = YES;
+    if (changed) {
+        objc_setAssociatedObject(owner, kGSMarginStateKey, @[@(w), @(count + 1)],
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
 // Balaie les vues de fond de la cellule, HORS contentView (les icônes et
 // contrôles y ont leurs propres rayons) : rayon ~10 pt ou coins partiels.
 static void GSFlattenBackgroundTree(UIView *view, UIView *skip, NSUInteger depth) {
@@ -243,6 +289,13 @@ static void GSFlattenCell(UITableViewCell *cell) {
     GSFlattenView(cell.selectedBackgroundView);
     GSFlattenView(cell.multipleSelectionBackgroundView);
     GSFlattenBackgroundTree(cell, cell.contentView, 0);
+
+    // Carte arrondie posée dans la cellule : carrée, pleine largeur.
+    CGFloat w = cell.bounds.size.width;
+    if (w > 0) GSFlattenCardTree(cell, cell, w, 0);
+
+    // Le texte ne doit pas coller au bord de l'écran.
+    GSApplyTextMargins(cell, cell.contentView);
 #if GS_DEBUG
     GSProbeCell(cell);
 #endif
@@ -362,8 +415,20 @@ static void GSLogAppearanceOnce(const char *tag, long value) {
 }
 
 - (void)layoutSubviews {
+    // Marge posée AVANT la mise en page : le texte est placé correctement du 1er coup.
+    if (GSViewNeedsFlattening(self)) GSApplyTextMargins(self, self.contentView);
     %orig;
     GSFlattenCell(self);
+}
+%end
+%end
+
+// En-têtes / pieds de section : même marge de texte que les cellules.
+%group HeaderFooterMargins
+%hook UITableViewHeaderFooterView
+- (void)layoutSubviews {
+    if (GSViewNeedsFlattening(self)) GSApplyTextMargins(self, self.contentView);
+    %orig;
 }
 %end
 %end
@@ -398,6 +463,11 @@ static BOOL GSIsCardApp(void) {
     }
     return value;
 }
+
+// Santé / Forme : mode carte d'office. Ailleurs : activé dès qu'une carte arrondie
+// pleine largeur est détectée dans une UICollectionView (puis mise en page relancée).
+static BOOL gGSCardLayoutActive = NO;
+static inline BOOL GSCardLayoutActive(void) { return gGSCardLayoutActive || GSIsCardApp(); }
 
 static BOOL GSReturnsDirectionalInsets(Class cls, SEL sel) {
     Method m = class_getInstanceMethod(cls, sel);
@@ -466,10 +536,11 @@ static inline NSInteger GSMapInsetsReference(NSInteger ref) {
 %group CardSectionInsets
 %hook NSCollectionLayoutSection
 - (NSDirectionalEdgeInsets)contentInsets {
-    return GSEdgeToEdge(%orig);
+    NSDirectionalEdgeInsets o = %orig;
+    return GSCardLayoutActive() ? GSEdgeToEdge(o) : o;
 }
 - (void)setContentInsets:(NSDirectionalEdgeInsets)insets {
-    %orig(GSEdgeToEdge(insets));
+    %orig(GSCardLayoutActive() ? GSEdgeToEdge(insets) : insets);
 }
 %end
 %end
@@ -477,10 +548,11 @@ static inline NSInteger GSMapInsetsReference(NSInteger ref) {
 %group CardItemInsets
 %hook NSCollectionLayoutItem
 - (NSDirectionalEdgeInsets)contentInsets {
-    return GSEdgeToEdgeIfSymmetric(%orig);
+    NSDirectionalEdgeInsets o = %orig;
+    return GSCardLayoutActive() ? GSEdgeToEdgeIfSymmetric(o) : o;
 }
 - (void)setContentInsets:(NSDirectionalEdgeInsets)insets {
-    %orig(GSEdgeToEdgeIfSymmetric(insets));
+    %orig(GSCardLayoutActive() ? GSEdgeToEdgeIfSymmetric(insets) : insets);
 }
 %end
 %end
@@ -488,10 +560,11 @@ static inline NSInteger GSMapInsetsReference(NSInteger ref) {
 %group CardInsetsReference
 %hook NSCollectionLayoutSection
 - (NSInteger)contentInsetsReference {
-    return GSMapInsetsReference(%orig);
+    NSInteger o = %orig;
+    return GSCardLayoutActive() ? GSMapInsetsReference(o) : o;
 }
 - (void)setContentInsetsReference:(NSInteger)ref {
-    %orig(GSMapInsetsReference(ref));
+    %orig(GSCardLayoutActive() ? GSMapInsetsReference(ref) : ref);
 }
 %end
 %end
@@ -504,7 +577,7 @@ static BOOL GSFlattenCardTree(UIView *view, UIView *root, CGFloat rootWidth, NSU
     BOOL found = NO;
     for (UIView *sub in view.subviews) {
         CGFloat r = sub.layer.cornerRadius;
-        if (r >= 6 && r <= 40 && ![sub isKindOfClass:[UIControl class]]) {
+        if (r >= 4 && r <= 60 && ![sub isKindOfClass:[UIControl class]]) {
             CGRect f = [sub convertRect:sub.bounds toView:root];
             BOOL capsule = r >= sub.bounds.size.height / 2.0 - 0.5;
             if (!capsule && f.size.width >= rootWidth * 0.8) {
@@ -537,12 +610,61 @@ static void GSProbeCardCell(UICollectionViewCell *cell) {
 }
 #endif
 
+static UICollectionView *GSCollectionViewForView(UIView *view) {
+    UIView *v = view.superview;
+    while (v && ![v isKindOfClass:[UICollectionView class]]) v = v.superview;
+    return (UICollectionView *)v;
+}
+
+// Cellule "pleine ligne" : presque aussi large que la collection et nettement
+// moins haute (écarte vignettes, pastilles, icônes de grille et pages plein écran).
+static BOOL GSIsFullRowCell(UICollectionViewCell *cell, UICollectionView *cv) {
+    if (!cv) return NO;
+    CGSize c = cv.bounds.size, s = cell.bounds.size;
+    if (c.width <= 0 || s.width <= 0 || s.height <= 0) return NO;
+    return s.width >= c.width * 0.7 && s.height <= c.height * 0.8;
+}
+
+static void *kGSCardCellKey = &kGSCardCellKey;
+
+static inline BOOL GSCellIsCard(UICollectionViewCell *cell) {
+    return GSIsCardApp() || [objc_getAssociatedObject(cell, kGSCardCellKey) boolValue];
+}
+
 static void GSFlattenCardCell(UICollectionViewCell *cell) {
     if (!cell.window) return;
+    BOOL cardApp = GSIsCardApp();
+    UICollectionView *cv = GSCollectionViewForView(cell);
+    // Hors Santé/Forme : seules les cellules pleine ligne sont des cartes candidates.
+    if (!cardApp && !GSIsFullRowCell(cell, cv)) return;
 #if GS_DEBUG
     GSProbeCardCell(cell);
 #endif
     UIBackgroundConfiguration *cfg = cell.backgroundConfiguration;
+    BOOL rounded = (cfg && cfg.cornerRadius >= 6) ||
+                   cell.layer.cornerRadius >= 6 ||
+                   cell.backgroundView.layer.cornerRadius >= 6;
+    CGFloat w = cell.bounds.size.width;
+    BOOL found = (w > 0) ? GSFlattenCardTree(cell, cell, w, 0) : NO;
+
+    if (!cardApp) {
+        if (rounded || found) {
+            objc_setAssociatedObject(cell, kGSCardCellKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        } else if (![objc_getAssociatedObject(cell, kGSCardCellKey) boolValue]) {
+            return; // cellule pleine ligne sans carte arrondie : on n'y touche pas
+        }
+        // Première carte arrondie détectée : active le mode carte (marges de
+        // section à 0) puis relance la mise en page de cette collection.
+        if (!gGSCardLayoutActive) {
+            gGSCardLayoutActive = YES;
+            GSLog(@"carte arrondie détectée (%@) : mode carte activé", NSStringFromClass([cell class]));
+            __weak UICollectionView *weakCV = cv;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakCV.collectionViewLayout invalidateLayout];
+            });
+        }
+    }
+
     if (cfg) {
         UIBackgroundConfiguration *flat = GSFlatConfiguration(cfg);
         if (flat != cfg) cell.backgroundConfiguration = flat;
@@ -550,8 +672,7 @@ static void GSFlattenCardCell(UICollectionViewCell *cell) {
     GSFlattenView(cell);
     GSFlattenView(cell.backgroundView);
     GSFlattenView(cell.selectedBackgroundView);
-    CGFloat w = cell.bounds.size.width;
-    if (w > 0) GSFlattenCardTree(cell, cell, w, 0);
+    GSApplyTextMargins(cell, cell.contentView);
 }
 
 %group CardCells
@@ -560,8 +681,12 @@ static void GSFlattenCardCell(UICollectionViewCell *cell) {
     %orig;
     GSFlattenCardCell(self);
 }
+- (void)updateConfigurationUsingState:(UICellConfigurationState *)state {
+    %orig;
+    GSFlattenCardCell(self);
+}
 - (void)setBackgroundConfiguration:(UIBackgroundConfiguration *)configuration {
-    %orig(configuration ? GSFlatConfiguration(configuration) : configuration);
+    %orig((configuration && GSCellIsCard(self)) ? GSFlatConfiguration(configuration) : configuration);
 }
 %end
 %end
@@ -569,7 +694,8 @@ static void GSFlattenCardCell(UICollectionViewCell *cell) {
 %group CardCellDefaultBackground
 %hook UICollectionViewCell
 - (UIBackgroundConfiguration *)defaultBackgroundConfiguration {
-    return GSFlatConfiguration(%orig);
+    UIBackgroundConfiguration *cfg = %orig;
+    return GSCellIsCard(self) ? GSFlatConfiguration(cfg) : cfg;
 }
 %end
 %end
@@ -637,8 +763,12 @@ static void GSInstallUIKitHooks(void) {
             }
         }
 
-        // Santé / Forme : cartes en UICollectionView (couche E).
-        if (GSIsCardApp()) GSInstallCardHooks();
+        // Cartes en UICollectionView (couche E) : d'office dans Santé / Forme,
+        // dans les autres apps seulement quand une carte arrondie est détectée.
+        GSInstallCardHooks();
+
+        // En-têtes / pieds de section : marge de texte (couche F).
+        if (objc_getClass("UITableViewHeaderFooterView")) { %init(HeaderFooterMargins); }
     });
 }
 
