@@ -30,6 +30,11 @@
 //   D. UICollectionView : listes insetGrouped converties en grouped.
 //   E. Cartes UICollectionView : marges du layout + rayons. Santé/Forme d'office ;
 //      dans toute autre app dès qu'une carte arrondie pleine largeur est détectée.
+//      Cartes verticales : groupe racine forcé à 100 % de largeur dès la création du
+//      layout (pas de carte "penchée à gauche"), élargissement géométrique sûr,
+//      passes de rattrapage au didMoveToWindow.
+//      Carrousels (défilement latéral / orthogonal) : coins carrés, mais taille,
+//      position et écarts d'origine conservés (jamais pleine largeur).
 //   F. Marge de texte : le contenu aplati garde GS_TEXT_MARGIN pt de marge
 //      (cellules, en-têtes/pieds de section, cartes) au lieu de coller au bord.
 // ---------------------------------------------------------------------------
@@ -466,7 +471,7 @@ static BOOL GSIsCardApp(void) {
 
 // Santé / Forme : mode carte d'office. Ailleurs : activé dès qu'une carte arrondie
 // pleine largeur est détectée dans une UICollectionView (puis mise en page relancée).
-static BOOL gGSCardLayoutActive = NO;
+static BOOL gGSCardLayoutActive = YES;   // actif d'emblée : la 1re mise en page est déjà pleine largeur
 static inline BOOL GSCardLayoutActive(void) { return gGSCardLayoutActive || GSIsCardApp(); }
 
 static BOOL GSReturnsDirectionalInsets(Class cls, SEL sel) {
@@ -533,14 +538,116 @@ static inline NSInteger GSMapInsetsReference(NSInteger ref) {
 }
 #pragma clang diagnostic pop
 
+// Une section n'est mise en pleine largeur que si c'est une vraie liste/carte :
+// pas de défilement orthogonal (rails d'apps, carrousels) et un groupe qui
+// occupe toute la largeur. Les autres gardent leurs marges d'origine, sinon
+// leurs textes et vignettes se collent au bord de l'écran.
+static BOOL GSSectionIsFullWidthList(id section) {
+    SEL sOrth = NSSelectorFromString(@"orthogonalScrollingBehavior");
+    if ([section respondsToSelector:sOrth]) {
+        NSInteger b = ((NSInteger (*)(id, SEL))objc_msgSend)(section, sOrth);
+        if (b != 0) return NO;
+    }
+    SEL sGroup = NSSelectorFromString(@"group");
+    if ([section respondsToSelector:sGroup]) {
+        id g = ((id (*)(id, SEL))objc_msgSend)(section, sGroup);
+        if ([g respondsToSelector:@selector(layoutSize)]) {
+            NSCollectionLayoutSize *sz = [(NSCollectionLayoutItem *)g layoutSize];
+            NSCollectionLayoutDimension *w = sz.widthDimension;
+            CGFloat screenW = UIScreen.mainScreen.bounds.size.width;
+            // Cartes dimensionnées en points (largeur écran - marges) : pleine largeur.
+            if (w.isAbsolute && w.dimension < screenW * 0.7) return NO;
+            if (w.isFractionalWidth && w.dimension < 0.8) return NO;
+        }
+    }
+    return YES;
+}
+
+static BOOL GSItemIsFullWidth(NSCollectionLayoutItem *item) {
+    if ([item isKindOfClass:NSClassFromString(@"NSCollectionLayoutSupplementaryItem")]) return NO;
+    NSCollectionLayoutDimension *w = item.layoutSize.widthDimension;
+    if (!w) return YES;
+    CGFloat screenW = UIScreen.mainScreen.bounds.size.width;
+    if (w.isAbsolute) return w.dimension >= screenW * 0.7;
+    if (w.isFractionalWidth) return w.dimension >= 0.8;
+    return YES;
+}
+
+// --- Appartenance item/groupe -> section ------------------------------------------
+// Un item ou un groupe ne sait pas dans quelle section il vit. On le retient à la
+// création de la section (référence faible, sans cycle) pour distinguer une liste
+// verticale (cartes pleine largeur) d'un carrousel (défilement orthogonal), dont
+// les écarts et les largeurs ne doivent JAMAIS être modifiés.
+static void *kGSOwnerSectionKey  = &kGSOwnerSectionKey;
+static void *kGSRootGroupKey     = &kGSRootGroupKey;
+static void *kGSSectionTaggedKey = &kGSSectionTaggedKey;
+
+static void GSTagItemTree(id item, id section, NSUInteger depth) {
+    if (!item || !section || depth > 6) return;
+    __weak id weakSection = section;
+    id (^box)(void) = ^id{ return weakSection; };
+    objc_setAssociatedObject(item, kGSOwnerSectionKey, box, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    SEL sSub = NSSelectorFromString(@"subitems");
+    if ([item respondsToSelector:sSub]) {
+        id subs = ((id (*)(id, SEL))objc_msgSend)(item, sSub);
+        if ([subs isKindOfClass:[NSArray class]]) {
+            for (id sub in (NSArray *)subs) GSTagItemTree(sub, section, depth + 1);
+        }
+    }
+}
+
+static void GSTagSection(id section, id group) {
+    if (!section || !group) return;
+    objc_setAssociatedObject(group, kGSRootGroupKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    GSTagItemTree(group, section, 0);
+}
+
+// Rattrapage : si la section a été créée par un autre chemin, on la balise au 1er accès.
+static void GSEnsureSectionTagged(id section) {
+    if ([objc_getAssociatedObject(section, kGSSectionTaggedKey) boolValue]) return;
+    SEL sGroup = NSSelectorFromString(@"group");
+    if (![section respondsToSelector:sGroup]) return;
+    id g = ((id (*)(id, SEL))objc_msgSend)(section, sGroup);
+    if (!g) return;
+    objc_setAssociatedObject(section, kGSSectionTaggedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    GSTagSection(section, g);
+}
+
+static id GSOwnerSection(id item) {
+    id (^box)(void) = objc_getAssociatedObject(item, kGSOwnerSectionKey);
+    return box ? box() : nil;
+}
+
+static BOOL GSSectionIsOrthogonal(id section) {
+    SEL sOrth = NSSelectorFromString(@"orthogonalScrollingBehavior");
+    if (!section || ![section respondsToSelector:sOrth]) return NO;
+    return ((NSInteger (*)(id, SEL))objc_msgSend)(section, sOrth) != 0;
+}
+
+static BOOL GSShouldZeroItemInsets(NSCollectionLayoutItem *item) {
+    if (!GSCardLayoutActive() || !GSItemIsFullWidth(item)) return NO;
+    id sec = GSOwnerSection(item);
+    if (sec && GSSectionIsOrthogonal(sec)) return NO;   // carrousel : écarts entre cartes conservés
+    return YES;
+}
+
+static void *kGSOrigSectionInsetsKey = &kGSOrigSectionInsetsKey;
+
 %group CardSectionInsets
 %hook NSCollectionLayoutSection
 - (NSDirectionalEdgeInsets)contentInsets {
     NSDirectionalEdgeInsets o = %orig;
-    return GSCardLayoutActive() ? GSEdgeToEdge(o) : o;
+    if (!GSCardLayoutActive()) return o;
+    GSEnsureSectionTagged(self);
+    if (GSSectionIsFullWidthList(self)) return GSEdgeToEdge(o);
+    NSValue *orig = objc_getAssociatedObject(self, kGSOrigSectionInsetsKey);
+    return orig ? [orig directionalEdgeInsetsValue] : o;   // rail : marges d'origine
 }
 - (void)setContentInsets:(NSDirectionalEdgeInsets)insets {
-    %orig(GSCardLayoutActive() ? GSEdgeToEdge(insets) : insets);
+    objc_setAssociatedObject(self, kGSOrigSectionInsetsKey,
+                             [NSValue valueWithDirectionalEdgeInsets:insets],
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    %orig((GSCardLayoutActive() && GSSectionIsFullWidthList(self)) ? GSEdgeToEdge(insets) : insets);
 }
 %end
 %end
@@ -549,10 +656,54 @@ static inline NSInteger GSMapInsetsReference(NSInteger ref) {
 %hook NSCollectionLayoutItem
 - (NSDirectionalEdgeInsets)contentInsets {
     NSDirectionalEdgeInsets o = %orig;
-    return GSCardLayoutActive() ? GSEdgeToEdgeIfSymmetric(o) : o;
+    return GSShouldZeroItemInsets(self) ? GSEdgeToEdgeIfSymmetric(o) : o;
 }
 - (void)setContentInsets:(NSDirectionalEdgeInsets)insets {
-    %orig(GSCardLayoutActive() ? GSEdgeToEdgeIfSymmetric(insets) : insets);
+    %orig(GSShouldZeroItemInsets(self) ? GSEdgeToEdgeIfSymmetric(insets) : insets);
+}
+%end
+%end
+
+// Groupe racine d'une liste verticale : une carte "carte de 343 pt" ou "90 %" restait
+// collée à gauche (marges de section à 0 => carte penchée à gauche, vide à droite).
+// On force sa largeur à 100 % AVANT la mise en page : pleine largeur dès la 1re image
+// et hauteurs auto-dimensionnées calculées avec la bonne largeur.
+%group CardGroupWidth
+%hook NSCollectionLayoutItem
+- (NSCollectionLayoutSize *)layoutSize {
+    NSCollectionLayoutSize *o = %orig;
+    if (!o || !GSCardLayoutActive()) return o;
+    if (![objc_getAssociatedObject(self, kGSRootGroupKey) boolValue]) return o;
+    id sec = GSOwnerSection(self);
+    if (!sec || GSSectionIsOrthogonal(sec)) return o;          // carrousel : intact
+    NSCollectionLayoutDimension *w = o.widthDimension;
+    if (!w) return o;
+    CGFloat screenW = UIScreen.mainScreen.bounds.size.width;
+    BOOL widen = (w.isAbsolute && w.dimension >= screenW * 0.7) ||
+                 (w.isFractionalWidth && w.dimension >= 0.8 && w.dimension < 0.999);
+    if (!widen) return o;
+    return [NSCollectionLayoutSize sizeWithWidthDimension:[NSCollectionLayoutDimension fractionalWidthDimension:1.0]
+                                          heightDimension:o.heightDimension];
+}
+%end
+%end
+
+%group CardSectionTagInit
+%hook NSCollectionLayoutSection
+- (instancetype)initWithGroup:(id)group {
+    id s = %orig;
+    GSTagSection(s, group);
+    return s;
+}
+%end
+%end
+
+%group CardSectionTagFactory
+%hook NSCollectionLayoutSection
++ (instancetype)sectionWithGroup:(id)group {
+    id s = %orig;
+    GSTagSection(s, group);
+    return s;
 }
 %end
 %end
@@ -561,10 +712,11 @@ static inline NSInteger GSMapInsetsReference(NSInteger ref) {
 %hook NSCollectionLayoutSection
 - (NSInteger)contentInsetsReference {
     NSInteger o = %orig;
-    return GSCardLayoutActive() ? GSMapInsetsReference(o) : o;
+    GSEnsureSectionTagged(self);
+    return (GSCardLayoutActive() && GSSectionIsFullWidthList(self)) ? GSMapInsetsReference(o) : o;
 }
 - (void)setContentInsetsReference:(NSInteger)ref {
-    %orig(GSCardLayoutActive() ? GSMapInsetsReference(ref) : ref);
+    %orig((GSCardLayoutActive() && GSSectionIsFullWidthList(self)) ? GSMapInsetsReference(ref) : ref);
 }
 %end
 %end
@@ -616,6 +768,44 @@ static UICollectionView *GSCollectionViewForView(UIView *view) {
     return (UICollectionView *)v;
 }
 
+// --- Carrousels (défilement latéral type captures d'écran de l'App Store) -------
+// Leurs cartes doivent être CARRÉES (coins à 0) mais garder exactement leur taille
+// et leur position : l'image 16:9 / format iPhone X ne doit jamais être étirée
+// pleine largeur. Ils sont donc exclus de tout élargissement / déplacement /
+// réinsertion de marge ; seuls leurs coins sont aplatis.
+static BOOL GSLayoutScrollsHorizontally(UICollectionView *cv) {
+    if (!cv) return NO;
+    UICollectionViewLayout *l = cv.collectionViewLayout;
+    if ([l isKindOfClass:[UICollectionViewFlowLayout class]]) {
+        return ((UICollectionViewFlowLayout *)l).scrollDirection == UICollectionViewScrollDirectionHorizontal;
+    }
+    if ([l isKindOfClass:[UICollectionViewCompositionalLayout class]]) {
+        return ((UICollectionViewCompositionalLayout *)l).configuration.scrollDirection ==
+               UICollectionViewScrollDirectionHorizontal;
+    }
+    return cv.contentSize.width > cv.bounds.size.width + 1.0;
+}
+
+// Cellule dans un défilement orthogonal (un UIScrollView s'intercale entre elle
+// et sa collection) ou dans une collection qui défile horizontalement.
+static BOOL GSCellIsInRail(UIView *cell, UICollectionView *cv) {
+    for (UIView *v = cell.superview; v && v != cv; v = v.superview) {
+        if ([v isKindOfClass:[UICollectionView class]]) break;
+        if ([v isKindOfClass:[UIScrollView class]]) return YES;
+    }
+    return GSLayoutScrollsHorizontally(cv);
+}
+
+// Une carte de carrousel (et pas une icône, une pastille ou une vignette) :
+// assez large par rapport à l'écran de la collection.
+static BOOL GSRailCellIsCardSized(UIView *cell, UICollectionView *cv) {
+    CGFloat vw = cv ? cv.bounds.size.width : UIScreen.mainScreen.bounds.size.width;
+    CGSize s = cell.bounds.size;
+    if (vw <= 0 || s.width < vw * 0.4 || s.height < 40) return NO;
+    CGFloat r = cell.layer.cornerRadius;
+    return !(r > 0 && r >= s.height / 2.0 - 0.5);   // pas une capsule
+}
+
 // Cellule "pleine ligne" : presque aussi large que la collection et nettement
 // moins haute (écarte vignettes, pastilles, icônes de grille et pages plein écran).
 static BOOL GSIsFullRowCell(UICollectionViewCell *cell, UICollectionView *cv) {
@@ -625,24 +815,155 @@ static BOOL GSIsFullRowCell(UICollectionViewCell *cell, UICollectionView *cv) {
     return s.width >= c.width * 0.7 && s.height <= c.height * 0.8;
 }
 
+
+// --- Contenu hors carte : on lui rend sa marge ---------------------------------
+// Les marges de section étant à 0 en mode carte, une cellule qui n'est PAS une
+// carte (titre, texte seul, ligne simple) se retrouverait collée au bord : on
+// réinsère son contentView. Les médias pleine largeur et les cellules
+// configurées via UIContentConfiguration (qui gèrent déjà leurs marges) sont exclus.
+static BOOL GSTreeHasFullBleedImage(UIView *view, CGFloat width, NSUInteger depth) {
+    if (depth > 3) return NO;
+    for (UIView *sub in view.subviews) {
+        if ([sub isKindOfClass:[UIImageView class]] &&
+            sub.bounds.size.width >= width * 0.9 && sub.bounds.size.height > 40) return YES;
+        if (GSTreeHasFullBleedImage(sub, width, depth + 1)) return YES;
+    }
+    return NO;
+}
+
+// La vue est-elle collée au bord gauche et quasi pleine largeur dans sa collection ?
+static BOOL GSIsFlushFullWidth(UIView *view, UICollectionView *cv) {
+    if (!cv) return NO;
+    CGRect r = [cv convertRect:view.bounds fromView:view];
+    UIEdgeInsets safe = cv.safeAreaInsets;
+    CGFloat avail = cv.bounds.size.width - safe.left - safe.right;
+    if (avail <= 0 || r.size.width < avail * 0.9) return NO;
+    return (r.origin.x - safe.left) < GS_TEXT_MARGIN * 0.5;
+}
+
+static void GSInsetPlainCell(UICollectionViewCell *cell, UICollectionView *cv) {
+    if (!GSCardLayoutActive() || !cell.window) return;
+    if (!GSIsFlushFullWidth(cell, cv)) return;
+    if (cell.contentConfiguration != nil || [cell isKindOfClass:[UICollectionViewListCell class]]) {
+        GSApplyTextMargins(cell, cell.contentView);   // gèrent leurs marges via layoutMargins
+        return;
+    }
+    UIView *content = cell.contentView;
+    if (content.layer.cornerRadius >= 4 || cell.layer.cornerRadius >= 4) return;
+    if (GSTreeHasFullBleedImage(content, cell.bounds.size.width, 0)) return;
+
+    // Le fond reste pleine largeur même si le contentView est réduit.
+    UIColor *bg = content.backgroundColor;
+    if (bg && CGColorGetAlpha(bg.CGColor) > 0.01 && !cell.backgroundView &&
+        !cell.backgroundConfiguration && !cell.backgroundColor) {
+        cell.backgroundColor = bg;
+    }
+    CGRect target = CGRectInset(cell.bounds, GS_TEXT_MARGIN, 0);
+    if (!CGRectEqualToRect(content.frame, target)) content.frame = target;
+}
+
 static void *kGSCardCellKey = &kGSCardCellKey;
 
 static inline BOOL GSCellIsCard(UICollectionViewCell *cell) {
     return GSIsCardApp() || [objc_getAssociatedObject(cell, kGSCardCellKey) boolValue];
 }
 
+
+// --- Cartes : pleine largeur DÈS le premier affichage ---------------------------
+// Les attributs de mise en page sont corrigés avant que la cellule soit placée
+// (aucun rendu intermédiaire inset/arrondi), quelle que soit la mise en page de
+// l'app (compositional, flow ou personnalisée).
+static __weak UICollectionView *gGSLastCV = nil;
+
+static BOOL GSCellLevelRounded(UICollectionViewCell *c) {
+    UIBackgroundConfiguration *cfg = c.backgroundConfiguration;
+    return (cfg && cfg.cornerRadius >= 6) || c.layer.cornerRadius >= 6 ||
+           c.contentView.layer.cornerRadius >= 6 || c.backgroundView.layer.cornerRadius >= 6;
+}
+
+static BOOL GSCellIsCardCandidate(UICollectionViewCell *c) {
+    return GSIsCardApp() || [objc_getAssociatedObject(c, kGSCardCellKey) boolValue] || GSCellLevelRounded(c);
+}
+
+// Élargit UNIQUEMENT une rangée verticale dont les marges latérales sont
+// symétriques (carte "inset") ou nulles à gauche (carte restée collée à gauche).
+// Une carte de carrousel (aperçu de la suivante : marges asymétriques), ou hors du
+// cadre visible, n'est jamais touchée : sinon elle se retrouve empilée / décalée.
+static CGRect GSWidenedFrame(CGRect f, UICollectionView *cv) {
+    if (!cv || GSLayoutScrollsHorizontally(cv)) return f;
+    UIEdgeInsets safe = cv.safeAreaInsets;
+    CGFloat avail = cv.bounds.size.width - safe.left - safe.right;
+    if (avail <= 0 || f.size.width < avail * 0.7) return f;       // pas une ligne/carte pleine largeur
+    CGFloat x0 = cv.bounds.origin.x + safe.left;
+    CGFloat left  = f.origin.x - x0;
+    CGFloat right = (x0 + avail) - CGRectGetMaxX(f);
+    CGFloat maxGap = avail * 0.25;
+    if (left < -0.5 || right < -0.5 || left > maxGap || right > maxGap) return f;
+    if (left < 0.5 && right < 0.5) return f;                      // déjà pleine largeur
+    if (left > 0.5 && fabs(left - right) > 1.0) return f;         // asymétrique : carrousel
+    f.origin.x = x0;
+    f.size.width = avail;
+    return f;
+}
+
+// Collection à utiliser dans applyLayoutAttributes: ; nil pour une cellule déjà
+// placée dans un défilement orthogonal (carrousel : on n'y touche pas).
+static UICollectionView *GSCollectionForApply(UICollectionViewCell *cell) {
+    UIView *sv = cell.superview;
+    if ([sv isKindOfClass:[UICollectionView class]]) return (UICollectionView *)sv;
+    if (sv) return nil;
+    return gGSLastCV;
+}
+
+static void *kGSRailCellKey = &kGSRailCellKey;
+
+static void GSFlattenCellLevel(UICollectionViewCell *c) {
+    GSFlattenView(c);
+    GSFlattenView(c.contentView);
+    GSFlattenView(c.backgroundView);
+    GSFlattenView(c.selectedBackgroundView);
+    UIBackgroundConfiguration *cfg = c.backgroundConfiguration;
+    if (cfg) {
+        UIBackgroundConfiguration *flat = GSFlatConfiguration(cfg);
+        if (flat != cfg) c.backgroundConfiguration = flat;
+    }
+}
+
+%group CardCollectionTracker
+%hook UICollectionView
+- (void)layoutSubviews {
+    gGSLastCV = self;
+    %orig;
+}
+%end
+%end
+
+// Carte de carrousel : coins carrés, rien d'autre (taille, position, marges et
+// contenu restent ceux de l'app).
+static void GSSquareRailCell(UICollectionViewCell *cell, UICollectionView *cv) {
+    objc_setAssociatedObject(cell, kGSRailCellKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!GSRailCellIsCardSized(cell, cv)) return;
+    GSFlattenCellLevel(cell);
+    CGFloat w = cell.bounds.size.width;
+    if (w > 0) GSFlattenCardTree(cell, cell, w, 0);
+    objc_setAssociatedObject(cell, kGSCardCellKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // fond plat aussi
+}
+
 static void GSFlattenCardCell(UICollectionViewCell *cell) {
     if (!cell.window) return;
     BOOL cardApp = GSIsCardApp();
     UICollectionView *cv = GSCollectionViewForView(cell);
+    if (GSCellIsInRail(cell, cv)) { GSSquareRailCell(cell, cv); return; }
+    objc_setAssociatedObject(cell, kGSRailCellKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     // Hors Santé/Forme : seules les cellules pleine ligne sont des cartes candidates.
-    if (!cardApp && !GSIsFullRowCell(cell, cv)) return;
+    if (!cardApp && !GSIsFullRowCell(cell, cv)) { GSInsetPlainCell(cell, cv); return; }
 #if GS_DEBUG
     GSProbeCardCell(cell);
 #endif
     UIBackgroundConfiguration *cfg = cell.backgroundConfiguration;
     BOOL rounded = (cfg && cfg.cornerRadius >= 6) ||
                    cell.layer.cornerRadius >= 6 ||
+                   cell.contentView.layer.cornerRadius >= 6 ||
                    cell.backgroundView.layer.cornerRadius >= 6;
     CGFloat w = cell.bounds.size.width;
     BOOL found = (w > 0) ? GSFlattenCardTree(cell, cell, w, 0) : NO;
@@ -651,7 +972,10 @@ static void GSFlattenCardCell(UICollectionViewCell *cell) {
         if (rounded || found) {
             objc_setAssociatedObject(cell, kGSCardCellKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         } else if (![objc_getAssociatedObject(cell, kGSCardCellKey) boolValue]) {
-            return; // cellule pleine ligne sans carte arrondie : on n'y touche pas
+            // Pleine ligne sans carte arrondie (titre, texte seul) : pas aplatie,
+            // mais elle récupère sa marge de texte.
+            GSInsetPlainCell(cell, cv);
+            return;
         }
         // Première carte arrondie détectée : active le mode carte (marges de
         // section à 0) puis relance la mise en page de cette collection.
@@ -670,9 +994,20 @@ static void GSFlattenCardCell(UICollectionViewCell *cell) {
         if (flat != cfg) cell.backgroundConfiguration = flat;
     }
     GSFlattenView(cell);
+    GSFlattenView(cell.contentView);
     GSFlattenView(cell.backgroundView);
     GSFlattenView(cell.selectedBackgroundView);
     GSApplyTextMargins(cell, cell.contentView);
+    // Carte laissée étroite / décalée par la mise en page : pleine largeur.
+    if (cv && cell.superview == cv && GSCellIsCard(cell)) {
+        CGRect nf = GSWidenedFrame(cell.frame, cv);
+        if (!CGRectEqualToRect(nf, cell.frame)) cell.frame = nf;
+    }
+    // Carte : le contentView occupe toute la cellule (jamais réinséré).
+    if (cell.contentView.frame.size.width < cell.bounds.size.width - 0.5 &&
+        cell.contentConfiguration == nil && GSCellIsCard(cell)) {
+        cell.contentView.frame = cell.bounds;
+    }
 }
 
 %group CardCells
@@ -688,6 +1023,45 @@ static void GSFlattenCardCell(UICollectionViewCell *cell) {
 - (void)setBackgroundConfiguration:(UIBackgroundConfiguration *)configuration {
     %orig((configuration && GSCellIsCard(self)) ? GSFlatConfiguration(configuration) : configuration);
 }
+- (void)applyLayoutAttributes:(UICollectionViewLayoutAttributes *)attrs {
+    if (attrs) {
+        UIView *sv = self.superview;
+        UICollectionView *cv = GSCollectionForApply(self);
+        BOOL knownRail = [objc_getAssociatedObject(self, kGSRailCellKey) boolValue];
+        if (!cv) {
+            // Carrousel orthogonal : coins carrés dès la 1re image, mais ni taille ni
+            // position modifiées.
+            if (sv && GSCellLevelRounded(self) && GSRailCellIsCardSized(self, nil)) GSFlattenCellLevel(self);
+        } else if (GSLayoutScrollsHorizontally(cv)) {
+            if (GSCellLevelRounded(self) && GSRailCellIsCardSized(self, cv)) GSFlattenCellLevel(self);
+        } else if (!knownRail && GSCellIsCardCandidate(self)) {
+            CGRect nf = GSWidenedFrame(attrs.frame, cv);
+            if (!CGRectEqualToRect(nf, attrs.frame)) {
+                UICollectionViewLayoutAttributes *a = [attrs copy];
+                a.frame = nf;
+                attrs = a;
+            }
+            GSFlattenCellLevel(self);     // carré dès la 1re image, sans saut visible
+        }
+    }
+    %orig(attrs);
+}
+// Contenu qui arrive après la 1re mise en page (cellules à contentConfiguration,
+// vues hébergées) : quelques passes de rattrapage très rapprochées, pour que l'arrondi
+// disparaisse sans délai perceptible. Chaque passe est idempotente.
+- (void)didMoveToWindow {
+    %orig;
+    if (!self.window) return;
+    static const double delays[] = {0.0, 0.08, 0.3};
+    for (size_t i = 0; i < sizeof(delays) / sizeof(delays[0]); i++) {
+        __weak UICollectionViewCell *weakCell = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delays[i] * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            UICollectionViewCell *c = weakCell;
+            if (c && c.window) GSFlattenCardCell(c);
+        });
+    }
+}
 %end
 %end
 
@@ -696,6 +1070,22 @@ static void GSFlattenCardCell(UICollectionViewCell *cell) {
 - (UIBackgroundConfiguration *)defaultBackgroundConfiguration {
     UIBackgroundConfiguration *cfg = %orig;
     return GSCellIsCard(self) ? GSFlatConfiguration(cfg) : cfg;
+}
+%end
+%end
+
+// En-têtes / pieds de section (vues supplémentaires) : même marge de texte.
+%group SupplementaryMargins
+%hook UICollectionReusableView
+- (void)layoutSubviews {
+    if (GSCardLayoutActive() && ![self isKindOfClass:[UICollectionViewCell class]] && self.window) {
+        UICollectionView *cv = GSCollectionViewForView(self);
+        if (GSIsFlushFullWidth(self, cv) &&
+            !GSTreeHasFullBleedImage(self, self.bounds.size.width, 0)) {
+            GSApplyTextMargins(self, self);
+        }
+    }
+    %orig;
 }
 %end
 %end
@@ -716,9 +1106,21 @@ static void GSInstallCardHooks(void) {
         GSIsIntegerAccessor(section, NSSelectorFromString(@"setContentInsetsReference:"), YES);
     GSLog(@"COUCHE E : section=%d item=%d reference=%d cell=%d", sectionOK, itemOK, refOK, cell != Nil);
 
+    // Balisage item/groupe -> section + largeur de groupe racine à 100 %.
+    BOOL tagInit = section && GSHasArgCount(section, NSSelectorFromString(@"initWithGroup:"), 3) &&
+                   GSReturnsObject(section, NSSelectorFromString(@"initWithGroup:"));
+    BOOL tagFactory = section && class_getClassMethod(section, NSSelectorFromString(@"sectionWithGroup:")) != NULL;
+    BOOL sizeOK = item && GSReturnsObject(item, NSSelectorFromString(@"layoutSize"));
+    GSLog(@"COUCHE E : tagInit=%d tagFactory=%d groupWidth=%d", tagInit, tagFactory, sizeOK);
+    if (tagInit)    { %init(CardSectionTagInit); }
+    if (tagFactory) { %init(CardSectionTagFactory); }
+    if (sizeOK)     { %init(CardGroupWidth); }
+
     if (sectionOK) { %init(CardSectionInsets); }
     if (itemOK)    { %init(CardItemInsets); }
     if (refOK)     { %init(CardInsetsReference); }
+    if (objc_getClass("UICollectionView")) { %init(CardCollectionTracker); }
+    if (objc_getClass("UICollectionReusableView")) { %init(SupplementaryMargins); }
     if (cell) {
         %init(CardCells);
         if (GSReturnsObject(cell, @selector(defaultBackgroundConfiguration))) {
