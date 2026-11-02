@@ -1,4 +1,4 @@
-name: Build GroupedSettings17Addon (rootless, arm64e)
+name: Build GroupedSettings17Addon (rootless, arm64 + arm64e)
 
 # Compilation sur macOS : seul moyen d'obtenir l'ABI arm64e "new" attendue par
 # iOS 15+ (la toolchain Linux/WSL produit une ABI incompatible).
